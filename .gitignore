@@ -1,0 +1,20 @@
+# Go
+/gollm
+*.exe
+
+# Browser sidecar
+browser/node_modules/
+browser/dist/
+
+# Reports (generated output)
+reports/*.json
+reports/*.png
+!reports/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
