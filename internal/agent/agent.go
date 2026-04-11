@@ -13,6 +13,12 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
+// Authenticator is an optional interface that drivers can implement
+// to support per-agent authentication.
+type Authenticator interface {
+	Login(ctx context.Context, identifier, password string) error
+}
+
 // Config controls how an agent runs.
 type Config struct {
 	// MaxSteps is the maximum number of tool-call rounds before stopping.
@@ -59,6 +65,21 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		AgentName: a.persona.Name,
 		StartedAt: time.Now(),
 		Goals:     a.initGoals(),
+	}
+
+	// Authenticate if the driver supports it and the persona has credentials.
+	if auth, ok := a.driver.(Authenticator); ok && a.persona.Credentials.Identifier != "" {
+		a.logger.Info("authenticating", "identifier", a.persona.Credentials.Identifier)
+		if err := auth.Login(ctx, a.persona.Credentials.Identifier, a.persona.Credentials.Password); err != nil {
+			session.Errors = append(session.Errors, AgentError{
+				Step:      0,
+				Timestamp: time.Now(),
+				Message:   fmt.Sprintf("authentication failed: %v", err),
+			})
+			session.StopReason = "auth_failed"
+			session.EndedAt = time.Now()
+			return session, nil
+		}
 	}
 
 	tools := a.driver.Tools()

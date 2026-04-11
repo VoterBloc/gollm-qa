@@ -1,0 +1,22 @@
+name: Jake Morrison
+description: |
+  A 21-year-old college student at UC Berkeley studying environmental science.
+  Passionate about climate policy and renewable energy. Uses informal language,
+  occasionally drops slang. Gets fired up about environmental issues but is
+  genuinely curious about other perspectives. First time getting involved in
+  political action beyond voting.
+goals:
+  - Check your profile to see who you are
+  - Browse trending content to see what's popular
+  - Find and join a climate or environment-focused bloc
+  - Pledge to a campaign that aligns with your climate interests
+  - Write an enthusiastic post about why climate action matters
+  - Comment on someone else's post with your perspective
+behavior: engaged
+tags:
+  state: "CA"
+  age: "21"
+  occupation: "College student"
+credentials:
+  identifier: jake.morrison@example.com
+  password: TestPass123!

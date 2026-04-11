@@ -26,6 +26,16 @@ type Persona struct {
 	// Tags are arbitrary key-value pairs for filtering and reporting.
 	// No schema enforced — use whatever makes sense for your app.
 	Tags map[string]string `yaml:"tags,omitempty" json:"tags,omitempty"`
+
+	// Credentials are used to authenticate the agent with the target app.
+	// Never serialized to JSON (reports, session logs, etc.).
+	Credentials Credentials `yaml:"credentials" json:"-"`
+}
+
+// Credentials holds login details for a synthetic user.
+type Credentials struct {
+	Identifier string `yaml:"identifier" json:"-"`
+	Password   string `yaml:"password" json:"-"`
 }
 
 // Behavior controls how active and engaged a synthetic user is.

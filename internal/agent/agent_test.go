@@ -83,6 +83,18 @@ func (m *mockDriver) Close() error { return nil }
 // Verify mockDriver implements the interface.
 var _ driver.Driver = (*mockDriver)(nil)
 
+// authMockDriver is a mockDriver that also implements Authenticator.
+type authMockDriver struct {
+	mockDriver
+	loginCalled bool
+	loginErr    error
+}
+
+func (m *authMockDriver) Login(_ context.Context, identifier, password string) error {
+	m.loginCalled = true
+	return m.loginErr
+}
+
 func testPersona() *Persona {
 	return &Persona{
 		Name:        "Cornelius McMuffin",
@@ -91,6 +103,15 @@ func testPersona() *Persona {
 		Behavior:    BehaviorEngaged,
 		Tags:        map[string]string{"state": "NM", "tinfoil_hat": "yes"},
 	}
+}
+
+func testPersonaWithCreds() *Persona {
+	p := testPersona()
+	p.Credentials = Credentials{
+		Identifier: "cornelius@lizardtruth.net",
+		Password:   "Tr00thS33k3r!",
+	}
+	return p
 }
 
 func TestAgent_StopsWhenNoToolCalls(t *testing.T) {
@@ -369,6 +390,82 @@ func TestPersona_SystemPromptBehaviors(t *testing.T) {
 				t.Errorf("expected prompt to contain %q for behavior %q", tt.contains, tt.behavior)
 			}
 		})
+	}
+}
+
+func TestAgent_AuthenticatesBeforeLoop(t *testing.T) {
+	drv := &authMockDriver{mockDriver: *newMockDriver()}
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Logged in and ready."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+
+	a := New(testPersonaWithCreds(), prov, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if !drv.loginCalled {
+		t.Error("expected Login() to be called")
+	}
+	if session.StopReason != "goals_complete" {
+		t.Errorf("expected stop reason 'goals_complete', got %q", session.StopReason)
+	}
+}
+
+func TestAgent_AuthFailureStopsRun(t *testing.T) {
+	drv := &authMockDriver{
+		mockDriver: *newMockDriver(),
+		loginErr:   fmt.Errorf("your credentials are as fake as the moon landing"),
+	}
+
+	a := New(testPersonaWithCreds(), &mockProvider{}, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if session.StopReason != "auth_failed" {
+		t.Errorf("expected stop reason 'auth_failed', got %q", session.StopReason)
+	}
+	if len(session.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(session.Errors))
+	}
+	if !contains(session.Errors[0].Message, "moon landing") {
+		t.Errorf("expected error message about moon landing, got: %q", session.Errors[0].Message)
+	}
+}
+
+func TestAgent_SkipsAuthWithoutCredentials(t *testing.T) {
+	drv := &authMockDriver{mockDriver: *newMockDriver()}
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "No creds, no problem."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+
+	// testPersona() has no credentials set.
+	a := New(testPersona(), prov, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if drv.loginCalled {
+		t.Error("Login() should not be called when persona has no credentials")
+	}
+	if session.StopReason != "goals_complete" {
+		t.Errorf("expected stop reason 'goals_complete', got %q", session.StopReason)
 	}
 }
 
