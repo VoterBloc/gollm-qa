@@ -99,6 +99,11 @@ func TestWriteSummary(t *testing.T) {
 		t.Fatalf("WriteSummary() error: %v", err)
 	}
 
+	base := filepath.Base(path)
+	if !strings.HasPrefix(base, "summary_") || !strings.HasSuffix(base, ".json") {
+		t.Errorf("unexpected summary filename: %s", base)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading file: %v", err)

@@ -186,7 +186,8 @@ func (d *Driver) doGraphQL(ctx context.Context, query string, variables map[stri
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	const maxResponseSize = 10 << 20 // 10 MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return "", fmt.Errorf("reading response: %w", err)
 	}

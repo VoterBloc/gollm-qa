@@ -469,6 +469,139 @@ func TestAgent_SkipsAuthWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestAgent_UXObservationRecorded(t *testing.T) {
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{
+							ID:        "toolu_ux",
+							Name:      "report_ux_observation",
+							Arguments: `{"observation": "The submit button was camouflaged as a potato", "severity": "warning"}`,
+						},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 50, OutputTokens: 20},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Noted the issue."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 60, OutputTokens: 10},
+			},
+		},
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if len(session.UXNotes) != 1 {
+		t.Fatalf("expected 1 UX note, got %d", len(session.UXNotes))
+	}
+	if session.UXNotes[0].Observation != "The submit button was camouflaged as a potato" {
+		t.Errorf("unexpected observation: %q", session.UXNotes[0].Observation)
+	}
+	if session.UXNotes[0].Severity != "warning" {
+		t.Errorf("expected severity 'warning', got %q", session.UXNotes[0].Severity)
+	}
+}
+
+func TestAgent_GoalMarkedComplete(t *testing.T) {
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{
+							ID:        "toolu_goal",
+							Name:      "mark_goal_complete",
+							Arguments: `{"goal": "Find a bloc to join", "notes": "Joined the Lizard People Anonymous bloc"}`,
+						},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 50, OutputTokens: 20},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done!"},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 60, OutputTokens: 5},
+			},
+		},
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	achieved := 0
+	for _, g := range session.Goals {
+		if g.Achieved {
+			achieved++
+			if g.Goal != "Find a bloc to join" {
+				t.Errorf("wrong goal marked achieved: %q", g.Goal)
+			}
+			if g.Notes != "Joined the Lizard People Anonymous bloc" {
+				t.Errorf("unexpected notes: %q", g.Notes)
+			}
+		}
+	}
+	if achieved != 1 {
+		t.Errorf("expected 1 achieved goal, got %d", achieved)
+	}
+}
+
+func TestAgent_GoalFuzzyMatch(t *testing.T) {
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{
+							ID:        "toolu_goal",
+							Name:      "mark_goal_complete",
+							Arguments: `{"goal": "find a bloc"}`,
+						},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 50, OutputTokens: 20},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done!"},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 60, OutputTokens: 5},
+			},
+		},
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// "find a bloc" should fuzzy-match "Find a bloc to join"
+	achieved := false
+	for _, g := range session.Goals {
+		if g.Goal == "Find a bloc to join" && g.Achieved {
+			achieved = true
+		}
+	}
+	if !achieved {
+		t.Error("expected fuzzy match to mark 'Find a bloc to join' as achieved")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

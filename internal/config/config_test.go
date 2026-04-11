@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VoterBloc/gollm-qa/internal/agent"
@@ -288,6 +289,57 @@ func TestLoadPersonas_SkipsNonYAML(t *testing.T) {
 	}
 	if len(personas) != 0 {
 		t.Errorf("expected 0 personas, got %d", len(personas))
+	}
+}
+
+func TestLoadAppConfig_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		errText string
+	}{
+		{
+			name:    "missing name",
+			yaml:    `base_url: https://example.com`,
+			errText: "name is required",
+		},
+		{
+			name:    "missing base_url",
+			yaml:    `name: My App`,
+			errText: "base_url is required",
+		},
+		{
+			name: "auth type without query",
+			yaml: `
+name: My App
+base_url: https://example.com
+auth:
+  type: graphql
+  token_path: "data.token"`,
+			errText: "auth.query is required",
+		},
+		{
+			name: "tool without name",
+			yaml: `
+name: My App
+base_url: https://example.com
+tools:
+  - query: "query { things }"`,
+			errText: "tools[0].name is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempFile(t, "bad.yaml", tt.yaml)
+			_, err := LoadAppConfig(path)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.errText) {
+				t.Errorf("expected error containing %q, got: %v", tt.errText, err)
+			}
+		})
 	}
 }
 

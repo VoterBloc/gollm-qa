@@ -96,7 +96,6 @@ func run() error {
 		len(personas), appCfg.Name, concurrency, maxSteps)
 
 	for _, p := range personas {
-		p := p
 		g.Go(func() error {
 			drv := apidriver.New(appCfg, logger)
 			llm := claude.New()

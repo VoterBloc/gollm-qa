@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -77,7 +78,35 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 		cfg.Auth.HeaderValue = "Bearer {{token}}"
 	}
 
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+func (cfg *AppConfig) validate() error {
+	if cfg.Name == "" {
+		return fmt.Errorf("app config: name is required")
+	}
+	if cfg.BaseURL == "" {
+		return fmt.Errorf("app config: base_url is required")
+	}
+	if cfg.Auth.Type != "" && cfg.Auth.Query == "" {
+		return fmt.Errorf("app config: auth.query is required when auth.type is set")
+	}
+	if cfg.Auth.Type != "" && cfg.Auth.TokenPath == "" {
+		return fmt.Errorf("app config: auth.token_path is required when auth.type is set")
+	}
+	for i, t := range cfg.Tools {
+		if t.Name == "" {
+			return fmt.Errorf("app config: tools[%d].name is required", i)
+		}
+		if t.Query == "" {
+			return fmt.Errorf("app config: tools[%d].query is required", i)
+		}
+	}
+	return nil
 }
 
 // LoadPersonas reads all YAML files from a directory and returns personas.
@@ -86,6 +115,11 @@ func LoadPersonas(dir string) ([]*agent.Persona, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading persona directory: %w", err)
 	}
+
+	// Sort for deterministic ordering across filesystems.
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
 
 	var personas []*agent.Persona
 	for _, entry := range entries {

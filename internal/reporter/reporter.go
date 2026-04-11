@@ -77,7 +77,8 @@ func WriteSummary(sessions []*agent.Session, outputDir string) (string, error) {
 		return "", fmt.Errorf("marshaling summary: %w", err)
 	}
 
-	path := filepath.Join(outputDir, "summary.json")
+	ts := time.Now().Format("20060102-150405")
+	path := filepath.Join(outputDir, fmt.Sprintf("summary_%s.json", ts))
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return "", fmt.Errorf("writing summary: %w", err)
 	}

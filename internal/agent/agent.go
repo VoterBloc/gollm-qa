@@ -5,8 +5,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/VoterBloc/gollm-qa/internal/driver"
@@ -85,9 +87,14 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 	tools := a.driver.Tools()
 	tools = append(tools, a.builtinTools()...)
 
+	startMessage := "Begin working toward your goals. Use the available tools to interact with the application."
+	if a.persona.Credentials.Identifier != "" {
+		startMessage = "You are now logged in. " + startMessage
+	}
+
 	messages := []provider.Message{
 		{Role: provider.RoleSystem, Content: a.persona.SystemPrompt()},
-		{Role: provider.RoleUser, Content: "You are now logged in. Begin working toward your goals. Use the available tools to interact with the application."},
+		{Role: provider.RoleUser, Content: startMessage},
 	}
 
 	a.logger.Info("starting agent run", "goals", len(a.persona.Goals), "max_steps", a.config.MaxSteps)
@@ -137,7 +144,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			a.logger.Info("executing tool", "step", step, "tool", call.Name)
 
 			start := time.Now()
-			result, execErr := a.executeTool(ctx, call)
+			result, execErr := a.executeTool(ctx, call, session, step)
 			elapsed := time.Since(start)
 
 			action := Action{
@@ -201,12 +208,12 @@ func (a *Agent) initGoals() []GoalResult {
 }
 
 // executeTool routes a tool call to either a builtin handler or the driver.
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall) (*provider.ToolResult, error) {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, session *Session, step int) (*provider.ToolResult, error) {
 	switch call.Name {
 	case "report_ux_observation":
-		return a.handleUXObservation(call)
+		return a.handleUXObservation(call, session, step)
 	case "mark_goal_complete":
-		return a.handleGoalComplete(call)
+		return a.handleGoalComplete(call, session)
 	default:
 		return a.driver.Execute(ctx, call)
 	}
@@ -255,20 +262,94 @@ func (a *Agent) builtinTools() []provider.Tool {
 	}
 }
 
-func (a *Agent) handleUXObservation(call provider.ToolCall) (*provider.ToolResult, error) {
-	// TODO: parse call.Arguments JSON and append to session UX notes.
-	// For now, return acknowledgment so the loop works end-to-end.
+func (a *Agent) handleUXObservation(call provider.ToolCall, session *Session, step int) (*provider.ToolResult, error) {
+	var args struct {
+		Observation string `json:"observation"`
+		Severity    string `json:"severity"`
+	}
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return &provider.ToolResult{
+			ToolID:  call.ID,
+			Content: fmt.Sprintf("failed to parse arguments: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	if args.Severity == "" {
+		args.Severity = "info"
+	}
+
+	session.UXNotes = append(session.UXNotes, UXNote{
+		Step:        step,
+		Timestamp:   time.Now(),
+		Observation: args.Observation,
+		Severity:    args.Severity,
+	})
+
+	a.logger.Info("UX observation recorded", "severity", args.Severity, "observation", args.Observation)
+
 	return &provider.ToolResult{
 		ToolID:  call.ID,
 		Content: "UX observation recorded.",
 	}, nil
 }
 
-func (a *Agent) handleGoalComplete(call provider.ToolCall) (*provider.ToolResult, error) {
-	// TODO: parse call.Arguments JSON and mark goal in session.
-	// For now, return acknowledgment so the loop works end-to-end.
+func (a *Agent) handleGoalComplete(call provider.ToolCall, session *Session) (*provider.ToolResult, error) {
+	var args struct {
+		Goal  string `json:"goal"`
+		Notes string `json:"notes"`
+	}
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return &provider.ToolResult{
+			ToolID:  call.ID,
+			Content: fmt.Sprintf("failed to parse arguments: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	// Find the matching goal and mark it achieved.
+	found := false
+	for i := range session.Goals {
+		if session.Goals[i].Goal == args.Goal {
+			session.Goals[i].Achieved = true
+			session.Goals[i].Notes = args.Notes
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Try a substring match — the LLM might not reproduce the goal text exactly.
+		for i := range session.Goals {
+			if strings.Contains(strings.ToLower(session.Goals[i].Goal), strings.ToLower(args.Goal)) ||
+				strings.Contains(strings.ToLower(args.Goal), strings.ToLower(session.Goals[i].Goal)) {
+				session.Goals[i].Achieved = true
+				session.Goals[i].Notes = args.Notes
+				found = true
+				break
+			}
+		}
+	}
+
+	if !found {
+		return &provider.ToolResult{
+			ToolID:  call.ID,
+			Content: fmt.Sprintf("No matching goal found for %q. Your goals are: %v", args.Goal, goalNames(session.Goals)),
+		}, nil
+	}
+
+	a.logger.Info("goal marked complete", "goal", args.Goal)
+
 	return &provider.ToolResult{
 		ToolID:  call.ID,
 		Content: "Goal marked as complete.",
 	}, nil
+}
+
+func goalNames(goals []GoalResult) []string {
+	names := make([]string, len(goals))
+	for i, g := range goals {
+		names[i] = g.Goal
+	}
+	return names
 }
