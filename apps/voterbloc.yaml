@@ -1,0 +1,249 @@
+name: VoterBloc
+base_url: http://localhost:8080/graphql
+
+auth:
+  type: graphql
+  query: |
+    mutation Login($identifier: String!, $password: String!) {
+      login(identifier: $identifier, password: $password) {
+        token
+        refreshToken
+        user { id username firstName lastName }
+      }
+    }
+  token_path: "data.login.token"
+  header_name: Authorization
+  header_value: "Bearer {{token}}"
+
+tools:
+  - name: get_my_profile
+    description: "Get your own user profile — see your blocs, pledges, and account details."
+    query: |
+      query Me {
+        me {
+          id username firstName lastName state bio
+          memberships { bloc { id name } role }
+          pledges { campaign { id title } pledgedAt }
+          blocsJoinedCount campaignsSupportedCount activePledgeCount
+        }
+      }
+    parameters: []
+    result_path: "data.me"
+    context: |
+      This is your profile. Use it to understand who you are and what you've done so far.
+      If you haven't joined any blocs yet, try browse_blocs to find ones that match your interests.
+
+  - name: browse_blocs
+    description: "Browse voter blocs. Optionally search by name or filter by state."
+    query: |
+      query BrowseBlocs($search: String, $state: String, $limit: Int, $offset: Int) {
+        voterBlocs(search: $search, state: $state, limit: $limit, offset: $offset, sort: MOST_MEMBERS) {
+          items { id name description state memberCount activeCampaignCount }
+          totalCount
+        }
+      }
+    parameters:
+      - name: search
+        type: string
+        description: "Search blocs by name"
+      - name: state
+        type: string
+        description: "Two-letter state code (e.g. OH, CA, TX)"
+      - name: limit
+        type: integer
+        description: "Max results to return (default 10)"
+      - name: offset
+        type: integer
+        description: "Offset for pagination"
+    result_path: "data.voterBlocs"
+    context: |
+      You just browsed voter blocs. To join one, use join_bloc with the bloc's id.
+      To see what campaigns a bloc is running, use browse_campaigns.
+      Consider filtering by your state or searching for topics you care about.
+
+  - name: join_bloc
+    description: "Join a voter bloc. Optionally include a message if the bloc requires approval."
+    query: |
+      mutation JoinBloc($blocId: ID!, $message: String) {
+        joinVoterBloc(blocId: $blocId, message: $message) {
+          id role bloc { id name }
+        }
+      }
+    parameters:
+      - name: blocId
+        type: string
+        description: "The ID of the bloc to join"
+        required: true
+      - name: message
+        type: string
+        description: "Optional message for blocs that require approval to join"
+    result_path: "data.joinVoterBloc"
+    context: |
+      You've joined a bloc! Now you can post in it with create_bloc_post, browse its campaigns
+      with browse_campaigns, or check the feed to see what other members are saying.
+
+  - name: browse_campaigns
+    description: "Browse campaigns. Optionally filter by status, state, or search term."
+    query: |
+      query BrowseCampaigns($status: CampaignStatus, $search: String, $state: String, $limit: Int) {
+        campaigns(status: $status, search: $search, state: $state, limit: $limit, sort: MOST_PLEDGES) {
+          items {
+            id slug title description goal status pledgeCount deadline
+            bloc { id name }
+            officials { name officeType state }
+          }
+          totalCount
+        }
+      }
+    parameters:
+      - name: status
+        type: string
+        description: "Filter by status: ACTIVE, DRAFT, SUCCEEDED, FAILED, EXPIRED"
+      - name: search
+        type: string
+        description: "Search campaigns by title"
+      - name: state
+        type: string
+        description: "Two-letter state code"
+      - name: limit
+        type: integer
+        description: "Max results (default 10)"
+    result_path: "data.campaigns"
+    context: |
+      You just browsed campaigns. To pledge your support, use pledge_campaign with the campaign's id.
+      To discuss a campaign, use create_campaign_post.
+      Only verified voters can pledge — if your pledge fails, you may not be verified.
+
+  - name: pledge_campaign
+    description: "Pledge your support to a campaign. Only verified voters can pledge."
+    query: |
+      mutation Pledge($campaignId: ID!) {
+        pledge(campaignId: $campaignId) {
+          id pledgedAt campaign { id title pledgeCount }
+        }
+      }
+    parameters:
+      - name: campaignId
+        type: string
+        description: "The campaign ID to pledge to"
+        required: true
+    result_path: "data.pledge"
+    context: |
+      You've pledged to this campaign! Consider writing a post about why you support it
+      using create_campaign_post or create_bloc_post.
+
+  - name: create_bloc_post
+    description: "Create a post in a voter bloc you've joined."
+    query: |
+      mutation CreateBlocPost($blocId: ID!, $content: String!, $type: PostType) {
+        createBlocPost(blocId: $blocId, content: $content, type: $type) {
+          id content type createdAt
+        }
+      }
+    parameters:
+      - name: blocId
+        type: string
+        description: "The bloc to post in (must be a member)"
+        required: true
+      - name: content
+        type: string
+        description: "The post content — write as your persona would"
+        required: true
+      - name: type
+        type: string
+        description: "Post type: DISCUSSION (default), UPDATE, ANNOUNCEMENT, MILESTONE"
+    result_path: "data.createBlocPost"
+    context: |
+      Your post was created! Check the feed later to see if anyone commented on it.
+      You can also comment on other people's posts with create_comment.
+
+  - name: create_campaign_post
+    description: "Create a post in a campaign."
+    query: |
+      mutation CreateCampaignPost($campaignId: ID!, $content: String!, $type: PostType) {
+        createCampaignPost(campaignId: $campaignId, content: $content, type: $type) {
+          id content type createdAt
+        }
+      }
+    parameters:
+      - name: campaignId
+        type: string
+        description: "The campaign to post in"
+        required: true
+      - name: content
+        type: string
+        description: "The post content — write as your persona would"
+        required: true
+      - name: type
+        type: string
+        description: "Post type: DISCUSSION (default), UPDATE, ANNOUNCEMENT, MILESTONE"
+    result_path: "data.createCampaignPost"
+    context: |
+      Your campaign post was created! Check the feed to see if anyone responds.
+
+  - name: create_comment
+    description: "Comment on a post."
+    query: |
+      mutation CreateComment($postId: ID!, $content: String!) {
+        createComment(postId: $postId, content: $content) {
+          id content createdAt
+        }
+      }
+    parameters:
+      - name: postId
+        type: string
+        description: "The post to comment on"
+        required: true
+      - name: content
+        type: string
+        description: "Your comment — write as your persona would"
+        required: true
+    result_path: "data.createComment"
+    context: |
+      Your comment was posted! Continue browsing the feed for more content to engage with.
+
+  - name: get_feed
+    description: "Get your activity feed — posts from blocs you've joined."
+    query: |
+      query Feed($cursor: String, $limit: Int, $blocId: ID) {
+        feed(cursor: $cursor, limit: $limit, blocId: $blocId) {
+          items {
+            post { id content type author { username } commentCount createdAt }
+            bloc { id name }
+            campaign { id title }
+          }
+          hasMore nextCursor
+        }
+      }
+    parameters:
+      - name: limit
+        type: integer
+        description: "Number of feed items (default 10)"
+      - name: blocId
+        type: string
+        description: "Filter feed to a specific bloc"
+      - name: cursor
+        type: string
+        description: "Pagination cursor from a previous response"
+    result_path: "data.feed"
+    context: |
+      This is your feed. You can comment on any post using create_comment with the post's id.
+      If a post has comments, they aren't shown here — you'd need to view the post directly.
+
+  - name: get_trending
+    description: "See what's trending — popular campaigns and blocs right now."
+    query: |
+      query Trending($limit: Int) {
+        trending(limit: $limit) {
+          campaigns { id title pledgeCount status bloc { name } }
+          blocs { id name memberCount state }
+        }
+      }
+    parameters:
+      - name: limit
+        type: integer
+        description: "Number of trending items per category"
+    result_path: "data.trending"
+    context: |
+      These are the most popular campaigns and blocs right now.
+      Join a trending bloc with join_bloc or pledge to a campaign with pledge_campaign.
