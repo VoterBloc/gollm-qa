@@ -227,13 +227,14 @@ func TestDriver_Purge(t *testing.T) {
 	defer server.Close()
 
 	cfg := testAppConfig(server.URL)
+	cfg.Admin = config.AdminConfig{
+		PurgeQuery:      `mutation { purgeTestData { byTable { table deleted } total } }`,
+		PurgeResultPath: "data.purgeTestData",
+	}
 	drv := New(cfg, nil)
 	drv.authToken = "admin-jwt-loch-ness"
 
-	report, err := drv.Purge(context.Background(),
-		`mutation { purgeTestData { byTable { table deleted } total } }`,
-		"data.purgeTestData",
-	)
+	report, err := drv.Purge(context.Background())
 	if err != nil {
 		t.Fatalf("Purge() error: %v", err)
 	}
@@ -247,13 +248,14 @@ func TestDriver_Purge(t *testing.T) {
 
 func TestDriver_Purge_MissingQuery(t *testing.T) {
 	cfg := testAppConfig("http://localhost")
+	// No Admin config set.
 	drv := New(cfg, nil)
 
-	_, err := drv.Purge(context.Background(), "", "data.purgeTestData")
+	_, err := drv.Purge(context.Background())
 	if err == nil {
-		t.Fatal("expected error for empty query")
+		t.Fatal("expected error when admin.purge_query is empty")
 	}
-	if !strings.Contains(err.Error(), "no query configured") {
+	if !strings.Contains(err.Error(), "no admin.purge_query") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -267,10 +269,14 @@ func TestDriver_Purge_GraphQLError(t *testing.T) {
 	defer server.Close()
 
 	cfg := testAppConfig(server.URL)
+	cfg.Admin = config.AdminConfig{
+		PurgeQuery:      `mutation { purgeTestData { total } }`,
+		PurgeResultPath: "data.purgeTestData",
+	}
 	drv := New(cfg, nil)
 	drv.authToken = "non-admin-jwt"
 
-	_, err := drv.Purge(context.Background(), `mutation { purgeTestData { total } }`, "data.purgeTestData")
+	_, err := drv.Purge(context.Background())
 	if err == nil {
 		t.Fatal("expected purge error")
 	}
@@ -288,10 +294,14 @@ func TestDriver_Purge_MissingResultPath(t *testing.T) {
 	defer server.Close()
 
 	cfg := testAppConfig(server.URL)
+	cfg.Admin = config.AdminConfig{
+		PurgeQuery:      `mutation { purgeTestData { total } }`,
+		PurgeResultPath: "data.purgeTestData",
+	}
 	drv := New(cfg, nil)
 	drv.authToken = "jwt"
 
-	_, err := drv.Purge(context.Background(), `mutation { purgeTestData { total } }`, "data.purgeTestData")
+	_, err := drv.Purge(context.Background())
 	if err == nil {
 		t.Fatal("expected error when result_path is absent from response")
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -20,6 +21,15 @@ import (
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
+)
+
+// gjson path keys inside a purgeTestData report. Centralized so the renderer
+// and any future consumer agree on the shape.
+const (
+	purgeKeyByTable = "byTable"
+	purgeKeyTable   = "table"
+	purgeKeyDeleted = "deleted"
+	purgeKeyTotal   = "total"
 )
 
 func main() {
@@ -184,8 +194,14 @@ func runCmd(args []string) error {
 
 func purgeCmd(args []string) error {
 	fs := flag.NewFlagSet("purge", flag.ExitOnError)
-	var configPath string
+	var (
+		configPath string
+		skipPrompt bool
+		countdown  time.Duration
+	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
+	fs.BoolVar(&skipPrompt, "yes", false, "skip the abort countdown")
+	fs.DurationVar(&countdown, "countdown", 3*time.Second, "abort window before purge runs (ignored with --yes)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -217,6 +233,16 @@ func purgeCmd(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	if !skipPrompt && countdown > 0 {
+		fmt.Fprintf(os.Stderr, "\n!! purging synthetic data via %s (%s) — Ctrl+C in %s to abort\n\n",
+			appCfg.Name, appCfg.BaseURL, countdown)
+		select {
+		case <-time.After(countdown):
+		case <-ctx.Done():
+			return fmt.Errorf("aborted")
+		}
+	}
+
 	drv := apidriver.New(appCfg, logger)
 	logger.Info("authenticating as admin", "identifier", adminID)
 	if err := drv.Login(ctx, adminID, adminPW); err != nil {
@@ -224,7 +250,7 @@ func purgeCmd(args []string) error {
 	}
 
 	logger.Info("running purge")
-	report, err := drv.Purge(ctx, appCfg.Admin.PurgeQuery, appCfg.Admin.PurgeResultPath)
+	report, err := drv.Purge(ctx)
 	if err != nil {
 		return fmt.Errorf("purge: %w", err)
 	}
@@ -236,8 +262,8 @@ func purgeCmd(args []string) error {
 // printPurgeReport renders a purge response. If it has the standard
 // {byTable: [{table, deleted}], total} shape, render as a table; otherwise
 // dump the raw JSON pretty-formatted.
-func printPurgeReport(w *os.File, jsonReport string) {
-	byTable := gjson.Get(jsonReport, "byTable")
+func printPurgeReport(w io.Writer, jsonReport string) {
+	byTable := gjson.Get(jsonReport, purgeKeyByTable)
 	if !byTable.IsArray() {
 		var pretty any
 		if err := json.Unmarshal([]byte(jsonReport), &pretty); err == nil {
@@ -249,14 +275,15 @@ func printPurgeReport(w *os.File, jsonReport string) {
 		return
 	}
 
+	const ruler = "----------------------------------------------"
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%-40s %s\n", "TABLE", "DELETED")
-	fmt.Fprintf(w, "%s\n", "----------------------------------------------")
+	fmt.Fprintln(w, ruler)
 	byTable.ForEach(func(_, row gjson.Result) bool {
-		fmt.Fprintf(w, "%-40s %d\n", row.Get("table").String(), row.Get("deleted").Int())
+		fmt.Fprintf(w, "%-40s %d\n", row.Get(purgeKeyTable).String(), row.Get(purgeKeyDeleted).Int())
 		return true
 	})
-	fmt.Fprintf(w, "%s\n", "----------------------------------------------")
-	fmt.Fprintf(w, "%-40s %d\n", "TOTAL", gjson.Get(jsonReport, "total").Int())
+	fmt.Fprintln(w, ruler)
+	fmt.Fprintf(w, "%-40s %d\n", "TOTAL", gjson.Get(jsonReport, purgeKeyTotal).Int())
 	fmt.Fprintln(w)
 }

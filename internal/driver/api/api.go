@@ -21,13 +21,14 @@ import (
 // Driver executes GraphQL operations against a target application.
 // One instance per agent — each holds its own auth token.
 type Driver struct {
-	baseURL    string
-	httpClient *http.Client
-	tools      []config.ToolConfig
-	toolIndex  map[string]*config.ToolConfig
-	authToken  string
-	authConfig config.AuthConfig
-	logger     *slog.Logger
+	baseURL     string
+	httpClient  *http.Client
+	tools       []config.ToolConfig
+	toolIndex   map[string]*config.ToolConfig
+	authToken   string
+	authConfig  config.AuthConfig
+	adminConfig config.AdminConfig
+	logger      *slog.Logger
 }
 
 // New creates an API driver from an app config.
@@ -42,12 +43,13 @@ func New(cfg *config.AppConfig, logger *slog.Logger) *Driver {
 	}
 
 	return &Driver{
-		baseURL:    cfg.BaseURL,
-		httpClient: &http.Client{},
-		tools:      cfg.Tools,
-		toolIndex:  index,
-		authConfig: cfg.Auth,
-		logger:     logger,
+		baseURL:     cfg.BaseURL,
+		httpClient:  &http.Client{},
+		tools:       cfg.Tools,
+		toolIndex:   index,
+		authConfig:  cfg.Auth,
+		adminConfig: cfg.Admin,
+		logger:      logger,
 	}
 }
 
@@ -113,16 +115,16 @@ func (d *Driver) Register(ctx context.Context, input map[string]any) error {
 	return nil
 }
 
-// Purge runs an admin-only mutation and returns the JSON at resultPath. The
-// caller is responsible for having logged in as an admin user first; Purge
-// just sends the configured mutation with whatever auth token the driver
-// currently holds. Returned string is the raw JSON of the report node.
-func (d *Driver) Purge(ctx context.Context, query, resultPath string) (string, error) {
-	if query == "" {
-		return "", fmt.Errorf("purge: no query configured")
+// Purge runs the configured admin purge mutation and returns the JSON at
+// admin.purge_result_path. The caller is responsible for having logged in as
+// an admin user first; Purge just sends the mutation with whatever auth
+// token the driver currently holds.
+func (d *Driver) Purge(ctx context.Context) (string, error) {
+	if d.adminConfig.PurgeQuery == "" {
+		return "", fmt.Errorf("purge: no admin.purge_query configured")
 	}
 
-	body, err := d.doGraphQL(ctx, query, nil, true)
+	body, err := d.doGraphQL(ctx, d.adminConfig.PurgeQuery, nil, true)
 	if err != nil {
 		return "", fmt.Errorf("purge request: %w", err)
 	}
@@ -131,12 +133,12 @@ func (d *Driver) Purge(ctx context.Context, query, resultPath string) (string, e
 		return "", fmt.Errorf("purge failed: %s", errs.Raw)
 	}
 
-	if resultPath == "" {
+	if d.adminConfig.PurgeResultPath == "" {
 		return body, nil
 	}
-	result := gjson.Get(body, resultPath)
+	result := gjson.Get(body, d.adminConfig.PurgeResultPath)
 	if !result.Exists() {
-		return "", fmt.Errorf("purge response missing data at path %q", resultPath)
+		return "", fmt.Errorf("purge response missing data at path %q", d.adminConfig.PurgeResultPath)
 	}
 	return result.Raw, nil
 }
