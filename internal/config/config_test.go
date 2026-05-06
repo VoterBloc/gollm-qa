@@ -114,6 +114,46 @@ tools: []
 	}
 }
 
+func TestLoadAppConfig_AdminFields(t *testing.T) {
+	yaml := `
+name: Bigfoot Appreciation Society
+base_url: https://api.squatch.example/graphql
+auth:
+  type: graphql
+  query: |
+    mutation Login($identifier: String!, $password: String!) {
+      login(identifier: $identifier, password: $password) { token }
+    }
+  token_path: "data.login.token"
+admin:
+  identifier_env: SQUATCH_ADMIN_EMAIL
+  password_env: SQUATCH_ADMIN_PASSWORD
+  purge_query: |
+    mutation { purgeTestData { byTable { table deleted } total } }
+  purge_result_path: "data.purgeTestData"
+tools: []
+`
+	path := writeTempFile(t, "admin.yaml", yaml)
+
+	cfg, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig() error: %v", err)
+	}
+
+	if cfg.Admin.IdentifierEnv != "SQUATCH_ADMIN_EMAIL" {
+		t.Errorf("unexpected identifier_env: %q", cfg.Admin.IdentifierEnv)
+	}
+	if cfg.Admin.PasswordEnv != "SQUATCH_ADMIN_PASSWORD" {
+		t.Errorf("unexpected password_env: %q", cfg.Admin.PasswordEnv)
+	}
+	if cfg.Admin.PurgeQuery == "" {
+		t.Error("expected purge_query to be populated")
+	}
+	if cfg.Admin.PurgeResultPath != "data.purgeTestData" {
+		t.Errorf("unexpected purge_result_path: %q", cfg.Admin.PurgeResultPath)
+	}
+}
+
 func TestLoadAppConfig_AppliesDefaults(t *testing.T) {
 	yaml := `
 name: Minimal App

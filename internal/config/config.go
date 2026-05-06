@@ -22,6 +22,21 @@ type AppConfig struct {
 	BaseURL string       `yaml:"base_url"`
 	Auth    AuthConfig   `yaml:"auth"`
 	Tools   []ToolConfig `yaml:"tools"`
+	Admin   AdminConfig  `yaml:"admin,omitempty"`
+}
+
+// AdminConfig describes admin-only operations (data purge, etc.). Reuses
+// AppConfig.Auth's login mutation — admin and regular users share the same
+// login surface in the apps we currently target.
+type AdminConfig struct {
+	// IdentifierEnv is the env var name to read the admin identifier from.
+	IdentifierEnv string `yaml:"identifier_env"`
+	// PasswordEnv is the env var name to read the admin password from.
+	PasswordEnv string `yaml:"password_env"`
+	// PurgeQuery is the GraphQL mutation that wipes synthetic data.
+	PurgeQuery string `yaml:"purge_query"`
+	// PurgeResultPath is a gjson path to the purge report inside the response.
+	PurgeResultPath string `yaml:"purge_result_path"`
 }
 
 // AuthConfig defines how agents authenticate with the target app.

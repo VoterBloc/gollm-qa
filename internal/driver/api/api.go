@@ -113,6 +113,34 @@ func (d *Driver) Register(ctx context.Context, input map[string]any) error {
 	return nil
 }
 
+// Purge runs an admin-only mutation and returns the JSON at resultPath. The
+// caller is responsible for having logged in as an admin user first; Purge
+// just sends the configured mutation with whatever auth token the driver
+// currently holds. Returned string is the raw JSON of the report node.
+func (d *Driver) Purge(ctx context.Context, query, resultPath string) (string, error) {
+	if query == "" {
+		return "", fmt.Errorf("purge: no query configured")
+	}
+
+	body, err := d.doGraphQL(ctx, query, nil, true)
+	if err != nil {
+		return "", fmt.Errorf("purge request: %w", err)
+	}
+
+	if errs := gjson.Get(body, "errors"); errs.Exists() {
+		return "", fmt.Errorf("purge failed: %s", errs.Raw)
+	}
+
+	if resultPath == "" {
+		return body, nil
+	}
+	result := gjson.Get(body, resultPath)
+	if !result.Exists() {
+		return "", fmt.Errorf("purge response missing data at path %q", resultPath)
+	}
+	return result.Raw, nil
+}
+
 // Tools returns provider.Tool definitions derived from the tool configs.
 func (d *Driver) Tools() []provider.Tool {
 	tools := make([]provider.Tool, len(d.tools))

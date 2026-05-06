@@ -205,6 +205,101 @@ func TestDriver_Register_TokenPathMissingFromResponse(t *testing.T) {
 	}
 }
 
+func TestDriver_Purge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify admin auth is sent.
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer admin-jwt-loch-ness" {
+			t.Errorf("expected admin auth header, got %q", auth)
+		}
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "purgeTestData") {
+			t.Errorf("expected purgeTestData query, got: %s", query)
+		}
+
+		resp := `{"data": {"purgeTestData": {"byTable": [{"table": "bigfoot_sightings", "deleted": 7}, {"table": "users", "deleted": 3}], "total": 10}}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	drv := New(cfg, nil)
+	drv.authToken = "admin-jwt-loch-ness"
+
+	report, err := drv.Purge(context.Background(),
+		`mutation { purgeTestData { byTable { table deleted } total } }`,
+		"data.purgeTestData",
+	)
+	if err != nil {
+		t.Fatalf("Purge() error: %v", err)
+	}
+	if !strings.Contains(report, "bigfoot_sightings") {
+		t.Errorf("expected report to contain bigfoot_sightings, got: %s", report)
+	}
+	if !strings.Contains(report, `"total": 10`) {
+		t.Errorf("expected report to contain total: 10, got: %s", report)
+	}
+}
+
+func TestDriver_Purge_MissingQuery(t *testing.T) {
+	cfg := testAppConfig("http://localhost")
+	drv := New(cfg, nil)
+
+	_, err := drv.Purge(context.Background(), "", "data.purgeTestData")
+	if err == nil {
+		t.Fatal("expected error for empty query")
+	}
+	if !strings.Contains(err.Error(), "no query configured") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDriver_Purge_GraphQLError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"errors": [{"message": "Yeti tried to purge but lacks admin role"}]}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	drv := New(cfg, nil)
+	drv.authToken = "non-admin-jwt"
+
+	_, err := drv.Purge(context.Background(), `mutation { purgeTestData { total } }`, "data.purgeTestData")
+	if err == nil {
+		t.Fatal("expected purge error")
+	}
+	if !strings.Contains(err.Error(), "Yeti") {
+		t.Errorf("expected GraphQL error in message, got: %v", err)
+	}
+}
+
+func TestDriver_Purge_MissingResultPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"data": {"somethingElse": {"value": 1}}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	drv := New(cfg, nil)
+	drv.authToken = "jwt"
+
+	_, err := drv.Purge(context.Background(), `mutation { purgeTestData { total } }`, "data.purgeTestData")
+	if err == nil {
+		t.Fatal("expected error when result_path is absent from response")
+	}
+	if !strings.Contains(err.Error(), "missing data at path") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestDriver_Register_GraphQLError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{"errors": [{"message": "Email already used by a sasquatch"}]}`
