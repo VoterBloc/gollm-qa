@@ -93,6 +93,113 @@ func TestDriver_Login(t *testing.T) {
 	}
 }
 
+func TestDriver_Register(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+
+		query, _ := body["query"].(string)
+		if !strings.Contains(query, "registerForTest") {
+			t.Errorf("expected registerForTest query, got: %s", query)
+		}
+
+		vars, _ := body["variables"].(map[string]any)
+		input, ok := vars["input"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected $input variable to be an object, got %T", vars["input"])
+		}
+		if input["email"] != "yeti@himalaya.example" {
+			t.Errorf("unexpected email: %v", input["email"])
+		}
+		if input["username"] != "yeti_mountaineer" {
+			t.Errorf("unexpected username: %v", input["username"])
+		}
+
+		resp := `{"data": {"registerForTest": {"token": "jwt-yeti-mountaineer"}}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	cfg.Auth.RegisterQuery = `mutation RegisterForTest($input: RegisterInput!) {
+		registerForTest(input: $input) { token }
+	}`
+	cfg.Auth.RegisterTokenPath = "data.registerForTest.token"
+	drv := New(cfg, nil)
+
+	err := drv.Register(context.Background(), map[string]any{
+		"email":     "yeti@himalaya.example",
+		"username":  "yeti_mountaineer",
+		"password":  "AbominableSnow1!",
+		"firstName": "Yeti",
+		"lastName":  "Snowfoot",
+	})
+	if err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	if drv.authToken != "jwt-yeti-mountaineer" {
+		t.Errorf("expected token 'jwt-yeti-mountaineer', got %q", drv.authToken)
+	}
+}
+
+func TestDriver_Register_NoTokenPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"data": {"registerForTest": {"id": "user-mothman-42"}}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	cfg.Auth.RegisterQuery = `mutation { registerForTest { id } }`
+	// No RegisterTokenPath — register-only flow, caller follows up with Login.
+	drv := New(cfg, nil)
+
+	if err := drv.Register(context.Background(), map[string]any{"email": "mothman@pointpleasant.wv"}); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+	if drv.authToken != "" {
+		t.Errorf("expected no token stored, got %q", drv.authToken)
+	}
+}
+
+func TestDriver_Register_MissingQuery(t *testing.T) {
+	cfg := testAppConfig("http://localhost")
+	drv := New(cfg, nil)
+
+	err := drv.Register(context.Background(), map[string]any{"email": "nobody@nowhere.example"})
+	if err == nil {
+		t.Fatal("expected error when register_query is empty")
+	}
+	if !strings.Contains(err.Error(), "no register_query") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDriver_Register_GraphQLError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"errors": [{"message": "Email already used by a sasquatch"}]}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	cfg.Auth.RegisterQuery = `mutation { registerForTest { token } }`
+	cfg.Auth.RegisterTokenPath = "data.registerForTest.token"
+	drv := New(cfg, nil)
+
+	err := drv.Register(context.Background(), map[string]any{"email": "fake@fake.example"})
+	if err == nil {
+		t.Fatal("expected register error")
+	}
+	if !strings.Contains(err.Error(), "sasquatch") {
+		t.Errorf("expected GraphQL error in message, got: %v", err)
+	}
+}
+
 func TestDriver_Login_GraphQLError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{"errors": [{"message": "Invalid credentials, you imposter"}]}`

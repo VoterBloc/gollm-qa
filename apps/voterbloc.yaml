@@ -12,6 +12,17 @@ auth:
       }
     }
   token_path: "data.login.token"
+  # registerForTest auto-verifies the email and flags the new user with
+  # is_test_user=true so a future purgeTestData() admin mutation can wipe
+  # synthetic accounts. Landed in VoterBloc/voterbloc#1714.
+  register_query: |
+    mutation RegisterForTest($input: RegisterInput!) {
+      registerForTest(input: $input) {
+        token
+        user { id username email isTestUser }
+      }
+    }
+  register_token_path: "data.registerForTest.token"
   header_name: Authorization
   header_value: "Bearer {{token}}"
 

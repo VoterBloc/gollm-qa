@@ -81,6 +81,39 @@ func TestLoadAppConfig(t *testing.T) {
 	}
 }
 
+func TestLoadAppConfig_RegisterFields(t *testing.T) {
+	yaml := `
+name: Bigfoot Appreciation Society
+base_url: https://api.squatch.example/graphql
+auth:
+  type: graphql
+  query: |
+    mutation Login($identifier: String!, $password: String!) {
+      login(identifier: $identifier, password: $password) { token }
+    }
+  token_path: "data.login.token"
+  register_query: |
+    mutation RegisterForTest($input: RegisterInput!) {
+      registerForTest(input: $input) { token }
+    }
+  register_token_path: "data.registerForTest.token"
+tools: []
+`
+	path := writeTempFile(t, "register.yaml", yaml)
+
+	cfg, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig() error: %v", err)
+	}
+
+	if cfg.Auth.RegisterQuery == "" {
+		t.Error("expected register_query to be populated")
+	}
+	if cfg.Auth.RegisterTokenPath != "data.registerForTest.token" {
+		t.Errorf("unexpected register_token_path: %q", cfg.Auth.RegisterTokenPath)
+	}
+}
+
 func TestLoadAppConfig_AppliesDefaults(t *testing.T) {
 	yaml := `
 name: Minimal App
