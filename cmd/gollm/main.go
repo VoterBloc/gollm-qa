@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joho/godotenv"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/VoterBloc/gollm-qa/internal/agent"
@@ -27,6 +28,9 @@ func main() {
 }
 
 func run() error {
+	// Load .env if present (errors silently ignored — env vars may already be set).
+	_ = godotenv.Load()
+
 	// Parse flags.
 	var (
 		configPath  string

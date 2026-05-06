@@ -32,6 +32,13 @@ type AuthConfig struct {
 	Query string `yaml:"query"`
 	// TokenPath is a gjson path to extract the token from the response.
 	TokenPath string `yaml:"token_path"`
+	// RegisterQuery is the GraphQL mutation used to create a new user (e.g.
+	// registerForTest). Optional — only needed for run modes that seed users.
+	RegisterQuery string `yaml:"register_query"`
+	// RegisterTokenPath is a gjson path to extract the token from the register
+	// response. If empty, register is treated as create-only and the caller is
+	// expected to follow up with Login.
+	RegisterTokenPath string `yaml:"register_token_path"`
 	// HeaderName is the HTTP header for the auth token (default "Authorization").
 	HeaderName string `yaml:"header_name"`
 	// HeaderValue is the header value template. {{token}} is replaced with the actual token.

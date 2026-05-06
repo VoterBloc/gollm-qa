@@ -78,6 +78,41 @@ func (d *Driver) Login(ctx context.Context, identifier, password string) error {
 	return nil
 }
 
+// Register creates a new user via the configured register mutation (e.g.
+// registerForTest in VoterBloc). The mutation receives a single $input
+// variable shaped from the supplied input map — apps that follow GraphQL
+// input-type conventions can pass any RegisterInput shape this way without
+// hardcoding it in Go. If the register response includes a token
+// (register_token_path set), it is stored on the driver and the caller does
+// not need to follow up with Login.
+func (d *Driver) Register(ctx context.Context, input map[string]any) error {
+	if d.authConfig.RegisterQuery == "" {
+		return fmt.Errorf("register: no register_query configured")
+	}
+
+	variables := map[string]any{"input": input}
+
+	body, err := d.doGraphQL(ctx, d.authConfig.RegisterQuery, variables, false)
+	if err != nil {
+		return fmt.Errorf("register request: %w", err)
+	}
+
+	if errs := gjson.Get(body, "errors"); errs.Exists() {
+		return fmt.Errorf("register failed: %s", errs.Raw)
+	}
+
+	if d.authConfig.RegisterTokenPath != "" {
+		token := gjson.Get(body, d.authConfig.RegisterTokenPath)
+		if !token.Exists() {
+			return fmt.Errorf("register response missing token at path %q", d.authConfig.RegisterTokenPath)
+		}
+		d.authToken = token.String()
+	}
+
+	d.logger.Info("registered successfully")
+	return nil
+}
+
 // Tools returns provider.Tool definitions derived from the tool configs.
 func (d *Driver) Tools() []provider.Tool {
 	tools := make([]provider.Tool, len(d.tools))
