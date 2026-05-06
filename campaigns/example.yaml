@@ -1,0 +1,38 @@
+# Example campaign — describes a synthetic user population for a scale test.
+#
+# Run with:
+#   gollm seed --config apps/voterbloc.yaml --campaign campaigns/example.yaml --output personas/run-2026-05/
+#
+# Tighter cohort briefs produce more genuinely-distinct personas. Aim for a
+# population segment with constrained demographics, interests, and posture —
+# not a single fully-specified individual.
+
+brief_global: |
+  VoterBloc users in the 2026 election cycle. Platform combines voter blocs
+  (interest-based groups) with campaigns endorsing candidates. Users post,
+  comment, and pledge support to campaigns.
+
+cohorts:
+  - name: retired-engaged
+    count: 8
+    brief: |
+      Retired working-class Midwesterners 60-75 with time on their hands and
+      strong opinions on local issues. Mix of urban (Cleveland, Detroit) and
+      rural. Varying tech literacy from comfortable to "asks grandkids for help."
+      Politically engaged but not necessarily partisan.
+
+  - name: college-active
+    count: 8
+    brief: |
+      First-time college voters in swing states (PA, MI, WI, GA, AZ),
+      18-22, very politically active and online. Half from urban high schools,
+      half from rural. Range of party affiliations and policy interests
+      (climate, student debt, housing, civil rights).
+
+  - name: skeptical-moderate
+    count: 6
+    brief: |
+      Suburban parents 35-50 with school-age kids, politically moderate,
+      skeptical of new platforms. Light users — they register but lurk more
+      than they post. Primary policy interests: education funding, public
+      safety, local taxes.
