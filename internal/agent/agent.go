@@ -21,6 +21,13 @@ type Authenticator interface {
 	Login(ctx context.Context, identifier, password string) error
 }
 
+// Registrar is an optional interface that drivers can implement to support
+// creating new user accounts. Used in conjunction with persona.RegisterInput
+// — when both are present, the agent calls Register before Login.
+type Registrar interface {
+	Register(ctx context.Context, input map[string]any) error
+}
+
 // Config controls how an agent runs.
 type Config struct {
 	// MaxSteps is the maximum number of tool-call rounds before stopping.
@@ -69,6 +76,29 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		Goals:     a.initGoals(),
 	}
 
+	authenticated := false
+
+	// Register the user first if the persona declares a register_input and the
+	// driver supports it. Some apps (e.g. those whose register mutation returns
+	// a token) won't need a follow-up Login — that's controlled by the driver
+	// config, not the agent.
+	if a.persona.RegisterInput != nil {
+		if reg, ok := a.driver.(Registrar); ok {
+			a.logger.Info("registering")
+			if err := reg.Register(ctx, a.persona.RegisterInput); err != nil {
+				session.Errors = append(session.Errors, AgentError{
+					Step:      0,
+					Timestamp: time.Now(),
+					Message:   fmt.Sprintf("registration failed: %v", err),
+				})
+				session.StopReason = "register_failed"
+				session.EndedAt = time.Now()
+				return session, nil
+			}
+			authenticated = true
+		}
+	}
+
 	// Authenticate if the driver supports it and the persona has credentials.
 	if auth, ok := a.driver.(Authenticator); ok && a.persona.Credentials.Identifier != "" {
 		a.logger.Info("authenticating", "identifier", a.persona.Credentials.Identifier)
@@ -82,13 +112,14 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			session.EndedAt = time.Now()
 			return session, nil
 		}
+		authenticated = true
 	}
 
 	tools := a.driver.Tools()
 	tools = append(tools, a.builtinTools()...)
 
 	startMessage := "Begin working toward your goals. Use the available tools to interact with the application."
-	if a.persona.Credentials.Identifier != "" {
+	if authenticated {
 		startMessage = "You are now logged in. " + startMessage
 	}
 

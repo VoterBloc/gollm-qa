@@ -18,3 +18,9 @@ tags:
 credentials:
   identifier: margaret.chen@example.com
   password: TestPass123!
+register_input:
+  email: margaret.chen@example.com
+  username: margaret_chen
+  password: TestPass123!
+  firstName: Margaret
+  lastName: Chen
