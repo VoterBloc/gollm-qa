@@ -186,9 +186,22 @@ func extractJSONObject(s string) string {
 	return ""
 }
 
+// validateIdentity rejects partial responses. Every field the user prompt
+// asks for is checked; if the model degrades and omits something, we want a
+// loud failure at seed time rather than a half-formed persona that breaks
+// at registration time.
 func validateIdentity(g *GeneratedIdentity) error {
 	if g.FirstName == "" || g.LastName == "" {
 		return fmt.Errorf("missing firstName or lastName")
+	}
+	if g.Age <= 0 {
+		return fmt.Errorf("missing or invalid age")
+	}
+	if g.State == "" {
+		return fmt.Errorf("missing state")
+	}
+	if g.Occupation == "" {
+		return fmt.Errorf("missing occupation")
 	}
 	if g.Email == "" {
 		return fmt.Errorf("missing email")
@@ -196,8 +209,8 @@ func validateIdentity(g *GeneratedIdentity) error {
 	if g.Username == "" {
 		return fmt.Errorf("missing username")
 	}
-	if g.Password == "" {
-		return fmt.Errorf("missing password")
+	if err := validatePassword(g.Password); err != nil {
+		return fmt.Errorf("password: %w", err)
 	}
 	if g.Description == "" {
 		return fmt.Errorf("missing description")
@@ -208,10 +221,105 @@ func validateIdentity(g *GeneratedIdentity) error {
 	default:
 		return fmt.Errorf("invalid behavior %q (expected engaged|moderate|lurker)", g.Behavior)
 	}
+	if len(g.Interests) == 0 {
+		return fmt.Errorf("missing interests")
+	}
 	if len(g.Goals) == 0 {
 		return fmt.Errorf("missing goals")
 	}
 	return nil
+}
+
+// validatePassword enforces the complexity the user prompt requests. Without
+// this, a password like "asdf" would pass (non-empty) and only fail at
+// registration time against the target app's password policy.
+func validatePassword(p string) error {
+	if len(p) < 10 {
+		return fmt.Errorf("must be at least 10 characters")
+	}
+	var hasDigit, hasSymbol, hasUpper, hasLower bool
+	for _, r := range p {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		default:
+			hasSymbol = true
+		}
+	}
+	if !hasDigit {
+		return fmt.Errorf("must contain a digit")
+	}
+	if !hasSymbol {
+		return fmt.Errorf("must contain a symbol")
+	}
+	if !hasUpper || !hasLower {
+		return fmt.Errorf("must contain mixed case")
+	}
+	return nil
+}
+
+// SeenIdentities tracks email + username uniqueness across multiple cohorts
+// in one seed run. Construct a single instance and pass it to each Dedupe
+// call so a duplicate in cohort B is caught against cohort A's output.
+type SeenIdentities struct {
+	Emails    map[string]bool
+	Usernames map[string]bool
+}
+
+// NewSeenIdentities returns an empty tracker.
+func NewSeenIdentities() *SeenIdentities {
+	return &SeenIdentities{
+		Emails:    make(map[string]bool),
+		Usernames: make(map[string]bool),
+	}
+}
+
+// Dedupe rewrites email and username on identities that collide with anything
+// already in `seen` (including each other). On collision it appends a numeric
+// suffix to the local-part of the email and to the username; the modified
+// identity is reported in `renamed` so callers can log a warning. The "two
+// Bartholomews" failure mode is plausible from LLM output and would otherwise
+// surface as a duplicate-key error at registration time, much later than
+// necessary.
+func Dedupe(identities []GeneratedIdentity, seen *SeenIdentities) (renamed []string) {
+	for i := range identities {
+		id := &identities[i]
+		emailFix, usernameFix := false, false
+		// Suffix off the original each time so collisions don't compound
+		// (avoid `bart-2-3@…` when -2 also collides — try -3 from scratch).
+		origEmail := id.Email
+		for n := 2; seen.Emails[id.Email]; n++ {
+			id.Email = suffixEmail(origEmail, n)
+			emailFix = true
+		}
+		origUsername := id.Username
+		for n := 2; seen.Usernames[id.Username]; n++ {
+			id.Username = suffixUsername(origUsername, n)
+			usernameFix = true
+		}
+		seen.Emails[id.Email] = true
+		seen.Usernames[id.Username] = true
+		if emailFix || usernameFix {
+			renamed = append(renamed, id.FullName())
+		}
+	}
+	return renamed
+}
+
+func suffixEmail(email string, n int) string {
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return fmt.Sprintf("%s-%d", email, n)
+	}
+	return fmt.Sprintf("%s-%d%s", email[:at], n, email[at:])
+}
+
+func suffixUsername(username string, n int) string {
+	return fmt.Sprintf("%s-%d", username, n)
 }
 
 func truncate(s string, n int) string {

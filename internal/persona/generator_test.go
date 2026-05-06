@@ -218,6 +218,165 @@ func TestGenerator_RejectsEmptyBrief(t *testing.T) {
 	}
 }
 
+func TestGenerator_RejectsMissingAge(t *testing.T) {
+	stub := &stubProvider{response: `{"personas": [
+		{
+			"firstName": "Eternal",
+			"lastName": "Ageless",
+			"state": "CA",
+			"occupation": "Time traveler",
+			"email": "eternal@gollm-test.example",
+			"username": "eternal",
+			"password": "ForeverY0ung!",
+			"description": "Refuses to give an age.",
+			"behavior": "lurker",
+			"interests": ["temporal mechanics"],
+			"goals": ["avoid paradoxes"]
+		}
+	]}`}
+
+	gen := NewGenerator(stub)
+	_, err := gen.Generate(context.Background(), "Time travelers", "", 1)
+	if err == nil {
+		t.Fatal("expected error for missing age")
+	}
+	if !strings.Contains(err.Error(), "age") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGenerator_RejectsMissingInterests(t *testing.T) {
+	stub := &stubProvider{response: `{"personas": [
+		{
+			"firstName": "Bland",
+			"lastName": "McNoFun",
+			"age": 40,
+			"state": "NE",
+			"occupation": "Beige enthusiast",
+			"email": "bland@gollm-test.example",
+			"username": "bland",
+			"password": "S0BoringPaint!",
+			"description": "Has no interests.",
+			"behavior": "lurker",
+			"interests": [],
+			"goals": ["exist"]
+		}
+	]}`}
+
+	gen := NewGenerator(stub)
+	_, err := gen.Generate(context.Background(), "Boring people", "", 1)
+	if err == nil {
+		t.Fatal("expected error for empty interests")
+	}
+	if !strings.Contains(err.Error(), "interests") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	tests := []struct {
+		name  string
+		pw    string
+		errOK bool
+	}{
+		{"good — long mixed digit symbol", "Tr0ub4dor&3", true},
+		{"good — exactly 10 chars", "Abc1!23456", true},
+		{"too short", "Sh0rt!", false},
+		{"no digit", "NoDigitsHere!", false},
+		{"no symbol", "NoSymbolHere1", false},
+		{"no upper", "alllower1!stuff", false},
+		{"no lower", "ALLUPPER1!STUFF", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePassword(tt.pw)
+			if tt.errOK && err != nil {
+				t.Errorf("expected %q to pass, got: %v", tt.pw, err)
+			}
+			if !tt.errOK && err == nil {
+				t.Errorf("expected %q to fail validation", tt.pw)
+			}
+		})
+	}
+}
+
+func TestDedupe_NoCollisions(t *testing.T) {
+	identities := []GeneratedIdentity{
+		{FirstName: "Alpha", LastName: "One", Email: "alpha@gollm-test.example", Username: "alpha"},
+		{FirstName: "Beta", LastName: "Two", Email: "beta@gollm-test.example", Username: "beta"},
+	}
+	seen := NewSeenIdentities()
+	renamed := Dedupe(identities, seen)
+	if len(renamed) != 0 {
+		t.Errorf("expected no renames, got: %v", renamed)
+	}
+	if identities[0].Email != "alpha@gollm-test.example" {
+		t.Errorf("expected email unchanged, got %q", identities[0].Email)
+	}
+}
+
+func TestDedupe_WithinBatch(t *testing.T) {
+	// LLM duplicated Bartholomew Sasquatch — both share email and username.
+	identities := []GeneratedIdentity{
+		{FirstName: "Bartholomew", LastName: "Sasquatch", Email: "bart@gollm-test.example", Username: "bart"},
+		{FirstName: "Bartholomew", LastName: "Sasquatch", Email: "bart@gollm-test.example", Username: "bart"},
+	}
+	seen := NewSeenIdentities()
+	renamed := Dedupe(identities, seen)
+
+	if len(renamed) != 1 {
+		t.Errorf("expected 1 renamed, got: %v", renamed)
+	}
+	if identities[0].Email != "bart@gollm-test.example" {
+		t.Errorf("first persona's email should be unchanged, got %q", identities[0].Email)
+	}
+	if identities[1].Email != "bart-2@gollm-test.example" {
+		t.Errorf("expected suffixed email, got %q", identities[1].Email)
+	}
+	if identities[1].Username != "bart-2" {
+		t.Errorf("expected suffixed username, got %q", identities[1].Username)
+	}
+}
+
+func TestDedupe_AcrossBatches(t *testing.T) {
+	// Cohort A produces "carol@…"; cohort B produces another "carol@…".
+	cohortA := []GeneratedIdentity{
+		{FirstName: "Carol", LastName: "Henriksen", Email: "carol@gollm-test.example", Username: "carol"},
+	}
+	cohortB := []GeneratedIdentity{
+		{FirstName: "Carol", LastName: "Mothman", Email: "carol@gollm-test.example", Username: "carol"},
+	}
+	seen := NewSeenIdentities()
+	Dedupe(cohortA, seen)
+	renamed := Dedupe(cohortB, seen)
+
+	if len(renamed) != 1 {
+		t.Errorf("expected B's Carol to be renamed, got: %v", renamed)
+	}
+	if cohortB[0].Email != "carol-2@gollm-test.example" {
+		t.Errorf("expected cross-batch suffix, got %q", cohortB[0].Email)
+	}
+}
+
+func TestDedupe_MultipleCollisions(t *testing.T) {
+	// Three Bartholomews — second gets -2, third gets -3.
+	identities := []GeneratedIdentity{
+		{Email: "bart@x.test", Username: "bart"},
+		{Email: "bart@x.test", Username: "bart"},
+		{Email: "bart@x.test", Username: "bart"},
+	}
+	seen := NewSeenIdentities()
+	Dedupe(identities, seen)
+
+	if identities[1].Email != "bart-2@x.test" {
+		t.Errorf("expected -2 suffix on second, got %q", identities[1].Email)
+	}
+	if identities[2].Email != "bart-3@x.test" {
+		t.Errorf("expected -3 suffix on third (not -2-3), got %q", identities[2].Email)
+	}
+}
+
 func TestExtractJSONObject_NestedBraces(t *testing.T) {
 	// Object with nested objects and strings containing braces.
 	in := `prose before {"a": {"b": "has } in string"}, "c": [{"d": 1}]} prose after`

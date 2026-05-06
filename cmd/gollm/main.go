@@ -329,6 +329,7 @@ func seedCmd(args []string) error {
 	defer cancel()
 
 	gen := persona.NewGenerator(claude.New())
+	seen := persona.NewSeenIdentities()
 
 	fmt.Fprintf(os.Stderr, "\nSeeding %d personas across %d cohorts for %s\n",
 		campaign.TotalPersonas(), len(campaign.Cohorts), appCfg.Name)
@@ -345,6 +346,11 @@ func seedCmd(args []string) error {
 		if len(identities) < cohort.Count {
 			logger.Warn("model returned fewer personas than requested",
 				"cohort", cohort.Name, "requested", cohort.Count, "got", len(identities))
+		}
+
+		if renamed := persona.Dedupe(identities, seen); len(renamed) > 0 {
+			logger.Warn("renamed personas to dedupe email/username collisions",
+				"cohort", cohort.Name, "count", len(renamed), "names", renamed)
 		}
 
 		for _, id := range identities {

@@ -41,7 +41,10 @@ func Write(id GeneratedIdentity, opts WriteOptions) (string, error) {
 		return "", fmt.Errorf("marshaling persona YAML: %w", err)
 	}
 
-	path := uniquePath(opts.OutputDir, filename(opts.CohortName, id))
+	path, err := uniquePath(opts.OutputDir, filename(opts.CohortName, id))
+	if err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("writing persona file: %w", err)
 	}
@@ -106,20 +109,21 @@ func filename(cohortName string, id GeneratedIdentity) string {
 }
 
 // uniquePath returns dir/name, adding -2/-3/etc. if the file already exists.
-func uniquePath(dir, name string) string {
+// Errors after 1000 collisions rather than overwriting — that case shouldn't
+// happen in normal use, and silent overwrite would lose work.
+func uniquePath(dir, name string) (string, error) {
 	candidate := filepath.Join(dir, name)
 	if _, err := os.Stat(candidate); os.IsNotExist(err) {
-		return candidate
+		return candidate, nil
 	}
 	base := strings.TrimSuffix(name, ".yaml")
 	for i := 2; i < 1000; i++ {
 		candidate = filepath.Join(dir, fmt.Sprintf("%s-%d.yaml", base, i))
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
+			return candidate, nil
 		}
 	}
-	// Pathological — fall back to original; will overwrite.
-	return filepath.Join(dir, name)
+	return "", fmt.Errorf("could not find unique filename for %q after 1000 attempts", name)
 }
 
 // slugify converts a free-form string to a filesystem-safe slug. Lowercases,
