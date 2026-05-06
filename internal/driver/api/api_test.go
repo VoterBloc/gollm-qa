@@ -178,6 +178,33 @@ func TestDriver_Register_MissingQuery(t *testing.T) {
 	}
 }
 
+func TestDriver_Register_TokenPathMissingFromResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Server returns a perfectly valid response — just at a different path
+		// than the config expects. Simulates a misconfigured register_token_path.
+		resp := `{"data": {"registerForTest": {"user": {"id": "user-jackalope-7"}}}}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	cfg := testAppConfig(server.URL)
+	cfg.Auth.RegisterQuery = `mutation { registerForTest { user { id } } }`
+	cfg.Auth.RegisterTokenPath = "data.registerForTest.token"
+	drv := New(cfg, nil)
+
+	err := drv.Register(context.Background(), map[string]any{"email": "jackalope@wyoming.example"})
+	if err == nil {
+		t.Fatal("expected error when configured token path is absent from response")
+	}
+	if !strings.Contains(err.Error(), "missing token at path") {
+		t.Errorf("expected 'missing token at path' error, got: %v", err)
+	}
+	if drv.authToken != "" {
+		t.Errorf("expected no token stored on failure, got %q", drv.authToken)
+	}
+}
+
 func TestDriver_Register_GraphQLError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{"errors": [{"message": "Email already used by a sasquatch"}]}`
