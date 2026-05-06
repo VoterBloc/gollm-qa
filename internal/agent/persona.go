@@ -30,6 +30,13 @@ type Persona struct {
 	// Credentials are used to authenticate the agent with the target app.
 	// Never serialized to JSON (reports, session logs, etc.).
 	Credentials Credentials `yaml:"credentials" json:"-"`
+
+	// RegisterInput is an arbitrary map passed to the target app's register
+	// mutation as $input. Persona-author supplies whatever shape the target
+	// app expects — keeps the agent app-agnostic. When set on a persona, the
+	// agent will call the driver's Register before Login. Never serialized
+	// to JSON (may contain passwords).
+	RegisterInput map[string]any `yaml:"register_input,omitempty" json:"-"`
 }
 
 // Credentials holds login details for a synthetic user.

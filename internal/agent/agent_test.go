@@ -83,16 +83,27 @@ func (m *mockDriver) Close() error { return nil }
 // Verify mockDriver implements the interface.
 var _ driver.Driver = (*mockDriver)(nil)
 
-// authMockDriver is a mockDriver that also implements Authenticator.
+// authMockDriver is a mockDriver that also implements Authenticator and
+// Registrar. Tests can leave the register fields zero-valued to exercise
+// login-only paths.
 type authMockDriver struct {
 	mockDriver
-	loginCalled bool
-	loginErr    error
+	loginCalled    bool
+	loginErr       error
+	registerCalled bool
+	registerInput  map[string]any
+	registerErr    error
 }
 
 func (m *authMockDriver) Login(_ context.Context, identifier, password string) error {
 	m.loginCalled = true
 	return m.loginErr
+}
+
+func (m *authMockDriver) Register(_ context.Context, input map[string]any) error {
+	m.registerCalled = true
+	m.registerInput = input
+	return m.registerErr
 }
 
 func testPersona() *Persona {
@@ -466,6 +477,144 @@ func TestAgent_SkipsAuthWithoutCredentials(t *testing.T) {
 	}
 	if session.StopReason != "goals_complete" {
 		t.Errorf("expected stop reason 'goals_complete', got %q", session.StopReason)
+	}
+}
+
+func TestAgent_RegistersBeforeLogin(t *testing.T) {
+	drv := &authMockDriver{mockDriver: *newMockDriver()}
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Registered, logged in, ready to find Bigfoot."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+
+	persona := testPersonaWithCreds()
+	persona.RegisterInput = map[string]any{
+		"email":     "cornelius@lizardtruth.net",
+		"username":  "cornelius_mcmuffin",
+		"password":  "Tr00thS33k3r!",
+		"firstName": "Cornelius",
+		"lastName":  "McMuffin",
+	}
+
+	a := New(persona, prov, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if !drv.registerCalled {
+		t.Error("expected Register() to be called when persona has register_input")
+	}
+	if !drv.loginCalled {
+		t.Error("expected Login() to be called after Register when credentials are also set")
+	}
+	if drv.registerInput["email"] != "cornelius@lizardtruth.net" {
+		t.Errorf("expected register input email to be passed through, got %v", drv.registerInput["email"])
+	}
+	if session.StopReason != "goals_complete" {
+		t.Errorf("expected stop reason 'goals_complete', got %q", session.StopReason)
+	}
+}
+
+func TestAgent_RegisterOnlyNoCreds(t *testing.T) {
+	drv := &authMockDriver{mockDriver: *newMockDriver()}
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Just registered, the register endpoint gave me a token."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+
+	persona := testPersona() // no credentials
+	persona.RegisterInput = map[string]any{
+		"email":    "yeti@himalaya.example",
+		"username": "yeti_mountaineer",
+		"password": "AbominableSnow1!",
+	}
+
+	a := New(persona, prov, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if !drv.registerCalled {
+		t.Error("expected Register() to be called")
+	}
+	if drv.loginCalled {
+		t.Error("Login() should not be called when persona has no credentials")
+	}
+	if session.StopReason != "goals_complete" {
+		t.Errorf("expected stop reason 'goals_complete', got %q", session.StopReason)
+	}
+}
+
+func TestAgent_RegisterFailureStopsRun(t *testing.T) {
+	drv := &authMockDriver{
+		mockDriver:  *newMockDriver(),
+		registerErr: fmt.Errorf("email already in use by a confirmed cryptid"),
+	}
+
+	persona := testPersonaWithCreds()
+	persona.RegisterInput = map[string]any{
+		"email":    "duplicate@cryptid.example",
+		"username": "duplicate_dan",
+	}
+
+	a := New(persona, &mockProvider{}, drv, DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if !drv.registerCalled {
+		t.Error("expected Register() to be called")
+	}
+	if drv.loginCalled {
+		t.Error("Login() should not be called after Register fails")
+	}
+	if session.StopReason != "register_failed" {
+		t.Errorf("expected stop reason 'register_failed', got %q", session.StopReason)
+	}
+	if len(session.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(session.Errors))
+	}
+	if !contains(session.Errors[0].Message, "confirmed cryptid") {
+		t.Errorf("expected error message about confirmed cryptid, got: %q", session.Errors[0].Message)
+	}
+}
+
+func TestAgent_NoRegisterInputSkipsRegister(t *testing.T) {
+	drv := &authMockDriver{mockDriver: *newMockDriver()}
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Logged in only."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+
+	// Persona has credentials but no RegisterInput — login-only path.
+	a := New(testPersonaWithCreds(), prov, drv, DefaultConfig(), nil)
+	if _, err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if drv.registerCalled {
+		t.Error("Register() should not be called when persona has no register_input")
+	}
+	if !drv.loginCalled {
+		t.Error("expected Login() to be called")
 	}
 }
 
