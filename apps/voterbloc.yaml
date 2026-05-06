@@ -26,6 +26,17 @@ auth:
   header_name: Authorization
   header_value: "Bearer {{token}}"
 
+# Maps register_input field names to templates referencing normalized
+# identity fields produced by `gollm seed`. Available placeholders:
+# {{firstName}}, {{lastName}}, {{email}}, {{username}}, {{password}},
+# {{state}}.
+persona_register_template:
+  email: "{{email}}"
+  username: "{{username}}"
+  password: "{{password}}"
+  firstName: "{{firstName}}"
+  lastName: "{{lastName}}"
+
 # Admin operations. purge_query wipes synthetic data between runs by deleting
 # every row whose user-axis resolves to is_test_user=true. Gated on the
 # TEST_DATA_PURGE feature flag (true on staging) and admin role; landed in

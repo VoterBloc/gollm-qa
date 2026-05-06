@@ -114,6 +114,41 @@ tools: []
 	}
 }
 
+func TestLoadAppConfig_PersonaRegisterTemplate(t *testing.T) {
+	yaml := `
+name: Cryptid Tracker
+base_url: https://api.cryptid.example/graphql
+auth:
+  type: graphql
+  query: "mutation { login { token } }"
+  token_path: "data.login.token"
+persona_register_template:
+  email: "{{email}}"
+  username: "{{username}}"
+  password: "{{password}}"
+  firstName: "{{firstName}}"
+  lastName: "{{lastName}}"
+tools: []
+`
+	path := writeTempFile(t, "tpl.yaml", yaml)
+
+	cfg, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig() error: %v", err)
+	}
+
+	tpl := cfg.PersonaRegisterTemplate
+	if len(tpl) != 5 {
+		t.Fatalf("expected 5 template entries, got %d", len(tpl))
+	}
+	if tpl["email"] != "{{email}}" {
+		t.Errorf("unexpected email template: %q", tpl["email"])
+	}
+	if tpl["firstName"] != "{{firstName}}" {
+		t.Errorf("unexpected firstName template: %q", tpl["firstName"])
+	}
+}
+
 func TestLoadAppConfig_AdminFields(t *testing.T) {
 	yaml := `
 name: Bigfoot Appreciation Society

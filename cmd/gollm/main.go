@@ -19,6 +19,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/agent"
 	"github.com/VoterBloc/gollm-qa/internal/config"
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
+	"github.com/VoterBloc/gollm-qa/internal/persona"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
 )
@@ -47,6 +48,8 @@ func main() {
 		err = runCmd(os.Args[2:])
 	case "purge":
 		err = purgeCmd(os.Args[2:])
+	case "seed":
+		err = seedCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -66,6 +69,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `gollm — AI-driven synthetic user platform
 
 Usage:
+  gollm seed --config <path> --campaign <path> --output <dir>
   gollm run --config <path> --personas <dir> [flags]
   gollm purge --config <path>
 
@@ -286,4 +290,83 @@ func printPurgeReport(w io.Writer, jsonReport string) {
 	fmt.Fprintln(w, ruler)
 	fmt.Fprintf(w, "%-40s %d\n", "TOTAL", gjson.Get(jsonReport, purgeKeyTotal).Int())
 	fmt.Fprintln(w)
+}
+
+func seedCmd(args []string) error {
+	fs := flag.NewFlagSet("seed", flag.ExitOnError)
+	var (
+		configPath   string
+		campaignPath string
+		outputDir    string
+	)
+	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
+	fs.StringVar(&campaignPath, "campaign", "", "path to campaign YAML describing cohorts to generate (required)")
+	fs.StringVar(&outputDir, "output", "", "directory to write generated persona YAMLs into (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if configPath == "" || campaignPath == "" || outputDir == "" {
+		fs.Usage()
+		return fmt.Errorf("--config, --campaign, and --output are required")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	appCfg, err := config.LoadAppConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading app config: %w", err)
+	}
+	if len(appCfg.PersonaRegisterTemplate) == 0 {
+		logger.Warn("app config has no persona_register_template; generated personas will lack register_input")
+	}
+
+	campaign, err := config.LoadCampaign(campaignPath)
+	if err != nil {
+		return fmt.Errorf("loading campaign: %w", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	gen := persona.NewGenerator(claude.New())
+	seen := persona.NewSeenIdentities()
+
+	fmt.Fprintf(os.Stderr, "\nSeeding %d personas across %d cohorts for %s\n",
+		campaign.TotalPersonas(), len(campaign.Cohorts), appCfg.Name)
+	fmt.Fprintf(os.Stderr, "Output: %s\n\n", outputDir)
+
+	totalWritten := 0
+	for _, cohort := range campaign.Cohorts {
+		logger.Info("generating cohort", "cohort", cohort.Name, "count", cohort.Count)
+
+		identities, err := gen.Generate(ctx, cohort.Brief, campaign.BriefGlobal, cohort.Count)
+		if err != nil {
+			return fmt.Errorf("cohort %s: %w", cohort.Name, err)
+		}
+		if len(identities) < cohort.Count {
+			logger.Warn("model returned fewer personas than requested",
+				"cohort", cohort.Name, "requested", cohort.Count, "got", len(identities))
+		}
+
+		if renamed := persona.Dedupe(identities, seen); len(renamed) > 0 {
+			logger.Warn("renamed personas to dedupe email/username collisions",
+				"cohort", cohort.Name, "count", len(renamed), "names", renamed)
+		}
+
+		for _, id := range identities {
+			path, err := persona.Write(id, persona.WriteOptions{
+				OutputDir:        outputDir,
+				CohortName:       cohort.Name,
+				RegisterTemplate: appCfg.PersonaRegisterTemplate,
+			})
+			if err != nil {
+				return fmt.Errorf("cohort %s: writing %s: %w", cohort.Name, id.FullName(), err)
+			}
+			logger.Info("wrote persona", "cohort", cohort.Name, "name", id.FullName(), "path", path)
+			totalWritten++
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "\nDone. Wrote %d personas to %s/\n", totalWritten, outputDir)
+	return nil
 }
