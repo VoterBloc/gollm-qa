@@ -26,6 +26,22 @@ auth:
   header_name: Authorization
   header_value: "Bearer {{token}}"
 
+# Admin operations. purge_query wipes synthetic data between runs by deleting
+# every row whose user-axis resolves to is_test_user=true. Gated on the
+# TEST_DATA_PURGE feature flag (true on staging) and admin role; landed in
+# VoterBloc/voterbloc#1723.
+admin:
+  identifier_env: VOTERBLOC_ADMIN_EMAIL
+  password_env: VOTERBLOC_ADMIN_PASSWORD
+  purge_query: |
+    mutation PurgeTestData {
+      purgeTestData {
+        byTable { table deleted }
+        total
+      }
+    }
+  purge_result_path: "data.purgeTestData"
+
 tools:
   - name: get_my_profile
     description: "Get your own user profile — see your blocs, pledges, and account details."
