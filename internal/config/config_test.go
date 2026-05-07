@@ -305,6 +305,77 @@ func TestToProviderTool(t *testing.T) {
 	}
 }
 
+func TestToProviderTool_NestedObject(t *testing.T) {
+	// register_for_test-style: one input arg whose shape is a nested object.
+	tc := ToolConfig{
+		Name:        "register_for_test",
+		Description: "Sign up a synthetic user.",
+		Parameters: []ParamConfig{
+			{
+				Name:     "input",
+				Type:     "object",
+				Required: true,
+				Properties: []ParamConfig{
+					{Name: "email", Type: "string", Required: true, Description: "user email"},
+					{Name: "username", Type: "string", Required: true},
+					{Name: "firstName", Type: "string"},
+					{Name: "favoriteCryptid", Type: "string", EnumValues: []string{"BIGFOOT", "MOTHMAN", "JERSEY_DEVIL"}},
+				},
+			},
+		},
+	}
+
+	tool := tc.ToProviderTool()
+	props := tool.Parameters["properties"].(map[string]any)
+	input := props["input"].(map[string]any)
+
+	if input["type"] != "object" {
+		t.Errorf("expected input.type 'object', got %v", input["type"])
+	}
+	nested, ok := input["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested properties on input, got %T", input["properties"])
+	}
+	if _, ok := nested["email"]; !ok {
+		t.Error("expected nested email property")
+	}
+
+	required, ok := input["required"].([]string)
+	if !ok || len(required) != 2 {
+		t.Errorf("expected nested required [email username], got %v", input["required"])
+	}
+
+	cryptid := nested["favoriteCryptid"].(map[string]any)
+	enumVals, _ := cryptid["enum"].([]string)
+	if len(enumVals) != 3 || enumVals[0] != "BIGFOOT" {
+		t.Errorf("expected 3 cryptid enum values, got %v", enumVals)
+	}
+}
+
+func TestToProviderTool_ArrayOfStrings(t *testing.T) {
+	tc := ToolConfig{
+		Name: "tag_sightings",
+		Parameters: []ParamConfig{
+			{
+				Name:     "tags",
+				Type:     "array",
+				Required: true,
+				Items:    &ParamConfig{Type: "string"},
+			},
+		},
+	}
+	tool := tc.ToProviderTool()
+	props := tool.Parameters["properties"].(map[string]any)
+	tags := props["tags"].(map[string]any)
+	if tags["type"] != "array" {
+		t.Errorf("expected tags.type 'array', got %v", tags["type"])
+	}
+	items, ok := tags["items"].(map[string]any)
+	if !ok || items["type"] != "string" {
+		t.Errorf("expected items.type 'string', got %v", tags["items"])
+	}
+}
+
 func TestToProviderTool_NoRequiredParams(t *testing.T) {
 	tc := ToolConfig{
 		Name:        "wander_aimlessly",

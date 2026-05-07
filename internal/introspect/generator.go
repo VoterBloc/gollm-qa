@@ -115,77 +115,87 @@ func descriptionOrFallback(field Field, opType string) string {
 	return fmt.Sprintf("%s the %s GraphQL %s.", strings.Title(opType[:1])+opType[1:], field.Name, opType) //nolint:staticcheck
 }
 
-// argsToParams converts GraphQL arguments to gollm's ParamConfig. For
-// scalar/enum/list args we emit one param per arg. For input-object args we
-// flatten the input's fields one level — the LLM provides a nested object
-// keyed by the arg name and the driver passes it through as a variable.
+// maxInputObjectDepth caps recursion when expanding INPUT_OBJECT inputFields
+// into nested ParamConfig.Properties. Real-world GraphQL inputs rarely nest
+// past 2-3 levels; this limit is mostly defense against self-referential
+// types (e.g. tree-shaped filters that contain themselves).
+const maxInputObjectDepth = 5
+
+// argsToParams converts GraphQL arguments to gollm's ParamConfig. INPUT_OBJECT
+// args expand into nested Properties; LIST args expand into Items; ENUM args
+// carry their values as EnumValues. The result is a JSON-Schema-shaped tree
+// that ToProviderTool can render directly for the LLM tool spec — no
+// stringified-input hack, no "pass JSON for complex parameters" prose.
 func argsToParams(schema *Schema, args []InputValue) []config.ParamConfig {
 	params := make([]config.ParamConfig, 0, len(args))
 	for _, arg := range args {
-		params = append(params, config.ParamConfig{
-			Name:        arg.Name,
-			Type:        gqlToParamType(arg.Type),
-			Description: argDescription(schema, arg),
-			Required:    arg.Type.IsRequired(),
-		})
+		params = append(params, gqlInputToParam(schema, arg.Name, arg.Description, arg.Type, 0))
 	}
 	return params
 }
 
-// gqlToParamType maps a GraphQL TypeRef to one of the strings ParamConfig
-// expects ("string", "integer", "boolean", "number"). Lists and input
-// objects collapse to "string" today since ParamConfig doesn't model nested
-// shapes; the description carries the structural hint instead.
-func gqlToParamType(t *TypeRef) string {
-	u := t.Unwrap()
-	if u == nil {
-		return "string"
+// gqlInputToParam recursively maps a GraphQL TypeRef to a ParamConfig. The
+// outermost NON_NULL determines Required; all inner NON_NULLs are unwrapped
+// to find the underlying kind (SCALAR/ENUM/LIST/INPUT_OBJECT).
+func gqlInputToParam(schema *Schema, name, desc string, t *TypeRef, depth int) config.ParamConfig {
+	required := t.IsRequired()
+	inner := t
+	if inner.Kind == "NON_NULL" {
+		inner = inner.OfType
 	}
-	switch u.Kind {
-	case "SCALAR":
-		switch u.Name {
-		case "Int":
-			return "integer"
-		case "Float":
-			return "number"
-		case "Boolean":
-			return "boolean"
-		default:
-			return "string" // String, ID, Date, custom scalars
-		}
-	case "ENUM":
-		return "string"
-	default:
-		return "string"
-	}
-}
 
-// argDescription combines the GraphQL description with a structural hint so
-// the LLM knows what shape to provide for non-scalar args (lists, inputs).
-func argDescription(schema *Schema, arg InputValue) string {
-	desc := strings.TrimSpace(arg.Description)
-	shape := arg.Type.GraphQLString()
-	if arg.Type.IsList() {
-		shape += " (pass as a JSON array)"
+	p := config.ParamConfig{
+		Name:        name,
+		Description: strings.TrimSpace(desc),
+		Required:    required,
 	}
-	if u := arg.Type.Unwrap(); u != nil && u.Kind == "INPUT_OBJECT" {
-		// Add a one-line summary of the input object's required fields.
-		if def := schema.TypeByName(u.Name); def != nil && len(def.InputFields) > 0 {
-			var fields []string
-			for _, f := range def.InputFields {
-				name := f.Name
-				if f.Type.IsRequired() {
-					name += "!"
-				}
-				fields = append(fields, name)
+
+	switch inner.Kind {
+	case "LIST":
+		p.Type = "array"
+		// The element type may itself be NON_NULL; recurse normally and
+		// let the called function unwrap.
+		elem := gqlInputToParam(schema, "", "", inner.OfType, depth+1)
+		// Items don't need a name field in JSON Schema and Required only
+		// makes sense at parent boundaries — strip both.
+		elem.Name = ""
+		elem.Required = false
+		p.Items = &elem
+	case "ENUM":
+		p.Type = "string"
+		if def := schema.TypeByName(inner.Name); def != nil {
+			for _, v := range def.EnumValues {
+				p.EnumValues = append(p.EnumValues, v.Name)
 			}
-			shape += fmt.Sprintf(" (object with fields: %s)", strings.Join(fields, ", "))
 		}
+	case "INPUT_OBJECT":
+		p.Type = "object"
+		if depth >= maxInputObjectDepth {
+			break // safety stop for self-referential inputs
+		}
+		def := schema.TypeByName(inner.Name)
+		if def == nil {
+			break
+		}
+		for _, f := range def.InputFields {
+			p.Properties = append(p.Properties,
+				gqlInputToParam(schema, f.Name, f.Description, f.Type, depth+1))
+		}
+	case "SCALAR":
+		switch inner.Name {
+		case "Int":
+			p.Type = "integer"
+		case "Float":
+			p.Type = "number"
+		case "Boolean":
+			p.Type = "boolean"
+		default:
+			p.Type = "string"
+		}
+	default:
+		p.Type = "string"
 	}
-	if desc == "" {
-		return shape
-	}
-	return desc + " — " + shape
+	return p
 }
 
 // buildOperation renders the full GraphQL operation string, including the

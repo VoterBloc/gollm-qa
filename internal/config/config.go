@@ -92,12 +92,25 @@ type ToolConfig struct {
 	Context string `yaml:"context"`
 }
 
-// ParamConfig defines a single parameter for a tool.
+// ParamConfig defines a single parameter for a tool. Composes recursively:
+// objects expand via Properties, arrays via Items, restricted-set strings
+// via EnumValues. ToProviderTool walks this tree to build the JSON Schema
+// the LLM sees in the tool spec.
 type ParamConfig struct {
 	Name        string `yaml:"name"`
-	Type        string `yaml:"type"` // "string", "integer", "boolean"
+	Type        string `yaml:"type"` // string, integer, number, boolean, object, array
 	Description string `yaml:"description"`
 	Required    bool   `yaml:"required"`
+	// Properties is the nested ParamConfig list when Type == "object".
+	// Each entry's Required flag contributes to the parent object's
+	// `required` array in the generated JSON Schema.
+	Properties []ParamConfig `yaml:"properties,omitempty"`
+	// Items describes the element type when Type == "array". A pointer
+	// rather than a value because a leaf-array's items have no name and
+	// embedding feels misleading in YAML.
+	Items *ParamConfig `yaml:"items,omitempty"`
+	// EnumValues constrains a string to a fixed set (GraphQL enum).
+	EnumValues []string `yaml:"enum,omitempty"`
 }
 
 // LoadAppConfig reads and parses an app config YAML file.
@@ -190,35 +203,72 @@ func LoadPersonas(dir string) ([]*agent.Persona, error) {
 	return personas, nil
 }
 
-// ToProviderTool converts a ToolConfig to the provider.Tool format the LLM sees.
+// ToProviderTool converts a ToolConfig to the provider.Tool format the LLM
+// sees. Walks ParamConfig trees recursively so nested objects (GraphQL
+// INPUT_OBJECT) and arrays produce real JSON Schema shapes, not stringified
+// hints — without this, the LLM sends `{"input": "{...}"}` (string) and
+// GraphQL servers reject it as "Expected type 'Map' but was 'String'".
 func (tc *ToolConfig) ToProviderTool() provider.Tool {
-	properties := make(map[string]any)
-	var required []string
+	return provider.Tool{
+		Name:        tc.Name,
+		Description: tc.Description,
+		Parameters:  paramsToSchema(tc.Parameters),
+	}
+}
 
-	for _, p := range tc.Parameters {
-		prop := map[string]any{
-			"type":        mapParamType(p.Type),
-			"description": p.Description,
-		}
-		properties[p.Name] = prop
+// paramsToSchema renders a ParamConfig slice as a JSON Schema object.
+// Used both for the top-level tool parameters and recursively for nested
+// object Properties.
+func paramsToSchema(params []ParamConfig) map[string]any {
+	properties := make(map[string]any, len(params))
+	var required []string
+	for _, p := range params {
+		properties[p.Name] = paramToSchema(p)
 		if p.Required {
 			required = append(required, p.Name)
 		}
 	}
-
-	params := map[string]any{
+	schema := map[string]any{
 		"type":       "object",
 		"properties": properties,
 	}
 	if len(required) > 0 {
-		params["required"] = required
+		schema["required"] = required
 	}
+	return schema
+}
 
-	return provider.Tool{
-		Name:        tc.Name,
-		Description: tc.Description,
-		Parameters:  params,
+// paramToSchema renders a single ParamConfig as a JSON Schema fragment.
+func paramToSchema(p ParamConfig) map[string]any {
+	schema := map[string]any{
+		"type": mapParamType(p.Type),
 	}
+	if p.Description != "" {
+		schema["description"] = p.Description
+	}
+	if len(p.EnumValues) > 0 {
+		schema["enum"] = p.EnumValues
+	}
+	switch strings.ToLower(p.Type) {
+	case "object":
+		nested := make(map[string]any, len(p.Properties))
+		var nestedRequired []string
+		for _, sub := range p.Properties {
+			nested[sub.Name] = paramToSchema(sub)
+			if sub.Required {
+				nestedRequired = append(nestedRequired, sub.Name)
+			}
+		}
+		schema["properties"] = nested
+		if len(nestedRequired) > 0 {
+			schema["required"] = nestedRequired
+		}
+	case "array":
+		if p.Items != nil {
+			schema["items"] = paramToSchema(*p.Items)
+		}
+	}
+	return schema
 }
 
 func mapParamType(t string) string {
@@ -231,6 +281,10 @@ func mapParamType(t string) string {
 		return "boolean"
 	case "number", "float":
 		return "number"
+	case "object":
+		return "object"
+	case "array":
+		return "array"
 	default:
 		return "string"
 	}

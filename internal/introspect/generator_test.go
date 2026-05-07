@@ -228,8 +228,27 @@ func TestGenerateTools_MutationWithInputObject(t *testing.T) {
 	if p.Name != "input" || !p.Required {
 		t.Errorf("expected required input param, got %+v", p)
 	}
-	if !strings.Contains(p.Description, "email") || !strings.Contains(p.Description, "RegisterInput") {
-		t.Errorf("expected input shape hint in description, got %q", p.Description)
+	// Input object now expands into Properties — no more stringified shape hint.
+	if p.Type != "object" {
+		t.Errorf("expected type 'object', got %q", p.Type)
+	}
+	if len(p.Properties) != 3 {
+		t.Fatalf("expected 3 nested properties (email, username, password), got %d", len(p.Properties))
+	}
+	propNames := map[string]bool{}
+	for _, sub := range p.Properties {
+		propNames[sub.Name] = true
+		if sub.Name == "email" && !sub.Required {
+			t.Error("expected email to be required (NON_NULL)")
+		}
+		if sub.Type != "string" {
+			t.Errorf("expected nested %q to be string, got %q", sub.Name, sub.Type)
+		}
+	}
+	for _, want := range []string{"email", "username", "password"} {
+		if !propNames[want] {
+			t.Errorf("expected nested property %q on input", want)
+		}
 	}
 }
 
@@ -245,6 +264,148 @@ func TestGenerateTools_LeafQueryNoArgs(t *testing.T) {
 	if !strings.Contains(me.Query, "me { id username }") {
 		t.Errorf("expected me to expand to scalar selection set, got:\n%s", me.Query)
 	}
+}
+
+func TestGenerateTools_ListAndEnum(t *testing.T) {
+	// Schema with a query taking [String!]! (required list of required strings)
+	// and an enum arg. Verifies array Items and EnumValues handling.
+	intT := &TypeRef{Kind: "SCALAR", Name: "Int"}
+	stringT := &TypeRef{Kind: "SCALAR", Name: "String"}
+	nonNullString := &TypeRef{Kind: "NON_NULL", OfType: stringT}
+	listOfStrings := &TypeRef{
+		Kind:   "NON_NULL",
+		OfType: &TypeRef{Kind: "LIST", OfType: nonNullString},
+	}
+	statusEnum := &TypeRef{Kind: "ENUM", Name: "CampaignStatus"}
+
+	schema := &Schema{
+		QueryType: &TypeRef{Kind: "OBJECT", Name: "Query"},
+		Types: []Type{
+			{
+				Kind: "OBJECT",
+				Name: "Query",
+				Fields: []Field{
+					{
+						Name: "searchCampaigns",
+						Args: []InputValue{
+							{Name: "tags", Type: listOfStrings, Description: "filter tags"},
+							{Name: "status", Type: statusEnum, Description: "filter by status"},
+							{Name: "limit", Type: intT},
+						},
+						Type: &TypeRef{Kind: "SCALAR", Name: "Int"},
+					},
+				},
+			},
+			{
+				Kind: "ENUM",
+				Name: "CampaignStatus",
+				EnumValues: []EnumValue{
+					{Name: "DRAFT"},
+					{Name: "ACTIVE"},
+					{Name: "EXPIRED"},
+				},
+			},
+		},
+	}
+
+	tools, _ := GenerateTools(schema, Options{})
+	tc := findTool(tools, "search_campaigns")
+	if tc == nil {
+		t.Fatal("search_campaigns tool not found")
+	}
+	if len(tc.Parameters) != 3 {
+		t.Fatalf("expected 3 params, got %d", len(tc.Parameters))
+	}
+
+	// Tags: array of strings, required.
+	tags := tc.Parameters[0]
+	if tags.Type != "array" {
+		t.Errorf("expected tags type 'array', got %q", tags.Type)
+	}
+	if !tags.Required {
+		t.Error("expected tags to be required (NON_NULL outer)")
+	}
+	if tags.Items == nil || tags.Items.Type != "string" {
+		t.Errorf("expected tags.items.type 'string', got %v", tags.Items)
+	}
+
+	// Status: enum, optional.
+	status := tc.Parameters[1]
+	if status.Type != "string" {
+		t.Errorf("expected status type 'string' (enum), got %q", status.Type)
+	}
+	if status.Required {
+		t.Error("expected status to be optional")
+	}
+	if len(status.EnumValues) != 3 {
+		t.Errorf("expected 3 enum values, got %v", status.EnumValues)
+	}
+
+	// Limit: integer.
+	if tc.Parameters[2].Type != "integer" {
+		t.Errorf("expected limit type 'integer', got %q", tc.Parameters[2].Type)
+	}
+}
+
+func TestGenerateTools_SelfReferentialInputCappedByDepth(t *testing.T) {
+	// FilterInput { children: [FilterInput] } — recursive. Without the depth
+	// cap the generator would loop forever; with it, expansion stops cleanly.
+	filterInput := &TypeRef{Kind: "INPUT_OBJECT", Name: "FilterInput"}
+	stringT := &TypeRef{Kind: "SCALAR", Name: "String"}
+
+	schema := &Schema{
+		QueryType: &TypeRef{Kind: "OBJECT", Name: "Query"},
+		Types: []Type{
+			{
+				Kind: "OBJECT",
+				Name: "Query",
+				Fields: []Field{
+					{
+						Name: "search",
+						Args: []InputValue{
+							{Name: "filter", Type: filterInput},
+						},
+						Type: &TypeRef{Kind: "SCALAR", Name: "Int"},
+					},
+				},
+			},
+			{
+				Kind: "INPUT_OBJECT",
+				Name: "FilterInput",
+				InputFields: []InputValue{
+					{Name: "field", Type: stringT},
+					{Name: "children", Type: &TypeRef{Kind: "LIST", OfType: filterInput}},
+				},
+			},
+		},
+	}
+
+	// If the depth cap is broken this either OOMs or stack-overflows.
+	tools, _ := GenerateTools(schema, Options{})
+	tc := findTool(tools, "search")
+	if tc == nil {
+		t.Fatal("search tool not found")
+	}
+	// Just walk the tree — the test passes if generation completes.
+	depth := paramDepth(tc.Parameters[0])
+	if depth > maxInputObjectDepth+2 {
+		t.Errorf("expected expansion bounded by maxInputObjectDepth, got depth %d", depth)
+	}
+}
+
+func paramDepth(p config.ParamConfig) int {
+	max := 0
+	for _, sub := range p.Properties {
+		if d := paramDepth(sub); d > max {
+			max = d
+		}
+	}
+	if p.Items != nil {
+		if d := paramDepth(*p.Items); d > max {
+			max = d
+		}
+	}
+	return max + 1
 }
 
 func TestGenerateTools_SkipsMetaTypes(t *testing.T) {
