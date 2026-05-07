@@ -119,7 +119,7 @@ func findTool(tools []config.ToolConfig, name string) *config.ToolConfig {
 }
 
 func TestGenerateTools_NamesAndCounts(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{})
+	tools, _ := GenerateTools(fixtureSchema(), Options{})
 
 	if len(tools) != 3 {
 		t.Fatalf("expected 3 tools (voterBlocs, me, registerForTest), got %d", len(tools))
@@ -132,21 +132,50 @@ func TestGenerateTools_NamesAndCounts(t *testing.T) {
 }
 
 func TestGenerateTools_IncludeFilter(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{Include: []string{"voterBlocs"}})
+	tools, _ := GenerateTools(fixtureSchema(), Options{Include: []string{"voterBlocs"}})
 	if len(tools) != 1 || tools[0].Name != "voter_blocs" {
 		t.Errorf("expected only voter_blocs tool, got %v", tools)
 	}
 }
 
 func TestGenerateTools_ExcludeFilter(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{Exclude: []string{"registerForTest"}})
+	tools, _ := GenerateTools(fixtureSchema(), Options{Exclude: []string{"registerForTest"}})
 	if findTool(tools, "register_for_test") != nil {
 		t.Error("expected register_for_test to be excluded")
 	}
 }
 
+func TestGenerateTools_UnmatchedFilters(t *testing.T) {
+	// Snake-case-instead-of-camel-case footgun: "voter_blocs" matches no
+	// GraphQL operation; the unmatched return value catches it.
+	_, unmatched := GenerateTools(fixtureSchema(), Options{
+		Include: []string{"voterBlocs", "voter_blocs"},
+		Exclude: []string{"deleteEverything"},
+	})
+
+	want := map[string]bool{"voter_blocs": true, "deleteEverything": true}
+	if len(unmatched) != len(want) {
+		t.Fatalf("expected 2 unmatched names, got %v", unmatched)
+	}
+	for _, name := range unmatched {
+		if !want[name] {
+			t.Errorf("unexpected unmatched entry %q", name)
+		}
+	}
+}
+
+func TestGenerateTools_AllFiltersMatched(t *testing.T) {
+	_, unmatched := GenerateTools(fixtureSchema(), Options{
+		Include: []string{"voterBlocs", "me"},
+		Exclude: []string{"registerForTest"},
+	})
+	if len(unmatched) != 0 {
+		t.Errorf("expected no unmatched filters, got %v", unmatched)
+	}
+}
+
 func TestGenerateTools_QueryShape(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{})
+	tools, _ := GenerateTools(fixtureSchema(), Options{})
 	blocs := findTool(tools, "voter_blocs")
 	if blocs == nil {
 		t.Fatal("voter_blocs tool not found")
@@ -174,7 +203,7 @@ func TestGenerateTools_QueryShape(t *testing.T) {
 }
 
 func TestGenerateTools_MutationWithInputObject(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{})
+	tools, _ := GenerateTools(fixtureSchema(), Options{})
 	register := findTool(tools, "register_for_test")
 	if register == nil {
 		t.Fatal("register_for_test tool not found")
@@ -205,7 +234,7 @@ func TestGenerateTools_MutationWithInputObject(t *testing.T) {
 }
 
 func TestGenerateTools_LeafQueryNoArgs(t *testing.T) {
-	tools := GenerateTools(fixtureSchema(), Options{})
+	tools, _ := GenerateTools(fixtureSchema(), Options{})
 	me := findTool(tools, "me")
 	if me == nil {
 		t.Fatal("me tool not found")
@@ -226,7 +255,7 @@ func TestGenerateTools_SkipsMetaTypes(t *testing.T) {
 		Type: &TypeRef{Kind: "OBJECT", Name: "Query"},
 	})
 
-	tools := GenerateTools(schema, Options{})
+	tools, _ := GenerateTools(schema, Options{})
 	for _, tc := range tools {
 		if strings.HasPrefix(tc.Name, "__") {
 			t.Errorf("expected meta-fields to be skipped, found %q", tc.Name)

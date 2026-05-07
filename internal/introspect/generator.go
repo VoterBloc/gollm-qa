@@ -25,21 +25,24 @@ type Options struct {
 // GenerateTools walks the schema and returns a ToolConfig per top-level
 // query and mutation field. The generated configs are drop-in replacements
 // for hand-written entries in apps/<app>.yaml's tools block.
-func GenerateTools(schema *Schema, opts Options) []config.ToolConfig {
+//
+// unmatched lists Include/Exclude entries that didn't match any GraphQL
+// operation. Empty in the happy case; non-empty when a user wrote a name
+// that doesn't exist in the schema (e.g. snake_case "voter_blocs" instead
+// of camelCase "voterBlocs"). Callers should surface these as warnings.
+func GenerateTools(schema *Schema, opts Options) (tools []config.ToolConfig, unmatched []string) {
 	if opts.MaxSelectionDepth <= 0 {
 		opts.MaxSelectionDepth = 2
 	}
 
-	include := stringSet(opts.Include)
-	exclude := stringSet(opts.Exclude)
-
-	var tools []config.ToolConfig
+	includeMatched := matchedSet(opts.Include)
+	excludeMatched := matchedSet(opts.Exclude)
 
 	if schema.QueryType != nil {
 		queryType := schema.TypeByName(schema.QueryType.Name)
 		if queryType != nil {
 			for _, field := range queryType.Fields {
-				if shouldSkip(field.Name, include, exclude) {
+				if shouldSkip(field.Name, includeMatched, excludeMatched) {
 					continue
 				}
 				tools = append(tools, generateTool(schema, "query", field, opts))
@@ -50,27 +53,48 @@ func GenerateTools(schema *Schema, opts Options) []config.ToolConfig {
 		mutType := schema.TypeByName(schema.MutationType.Name)
 		if mutType != nil {
 			for _, field := range mutType.Fields {
-				if shouldSkip(field.Name, include, exclude) {
+				if shouldSkip(field.Name, includeMatched, excludeMatched) {
 					continue
 				}
 				tools = append(tools, generateTool(schema, "mutation", field, opts))
 			}
 		}
 	}
-	return tools
+
+	for name, matched := range includeMatched {
+		if !matched {
+			unmatched = append(unmatched, name)
+		}
+	}
+	for name, matched := range excludeMatched {
+		if !matched {
+			unmatched = append(unmatched, name)
+		}
+	}
+	return tools, unmatched
 }
 
+// shouldSkip checks meta-prefix, allowlist, and denylist. Mutates the
+// passed-in matched maps so the caller can detect entries that never
+// matched any schema operation. Exclude is checked before include so an
+// entry on both lists still counts as "matched" for warning purposes.
 func shouldSkip(name string, include, exclude map[string]bool) bool {
 	if strings.HasPrefix(name, "__") {
 		return true // GraphQL meta-queries
 	}
-	if len(include) > 0 && !include[name] {
-		return true
+	excluded := false
+	if _, ok := exclude[name]; ok {
+		exclude[name] = true
+		excluded = true
 	}
-	if exclude[name] {
-		return true
+	if len(include) > 0 {
+		if _, ok := include[name]; ok {
+			include[name] = true
+		} else {
+			return true
+		}
 	}
-	return false
+	return excluded
 }
 
 func generateTool(schema *Schema, opType string, field Field, opts Options) config.ToolConfig {
@@ -248,13 +272,15 @@ func renderSelection(schema *Schema, t *TypeRef, depth, maxDepth int) string {
 	return "{ " + strings.Join(parts, " ") + " }"
 }
 
-func stringSet(items []string) map[string]bool {
+// matchedSet returns a map keyed by items, with values starting at false
+// (not yet matched). shouldSkip flips them to true when used.
+func matchedSet(items []string) map[string]bool {
 	if len(items) == 0 {
 		return nil
 	}
 	m := make(map[string]bool, len(items))
 	for _, s := range items {
-		m[s] = true
+		m[s] = false
 	}
 	return m
 }

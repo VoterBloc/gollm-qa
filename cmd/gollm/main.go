@@ -134,10 +134,19 @@ func runCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("introspecting schema: %w", err)
 		}
-		appCfg.Tools = introspect.GenerateTools(schema, introspect.Options{
+		var unmatched []string
+		appCfg.Tools, unmatched = introspect.GenerateTools(schema, introspect.Options{
 			Include: appCfg.ToolsInclude,
 			Exclude: appCfg.ToolsExclude,
 		})
+		if len(unmatched) > 0 {
+			// Almost always a snake_case-vs-camelCase mistake. Surface loud.
+			logger.Warn("tools_include / tools_exclude entries did not match any schema operation",
+				"unmatched", unmatched)
+		}
+		if len(appCfg.Tools) == 0 {
+			return fmt.Errorf("introspection produced zero tools — check tools_include / tools_exclude in %s", configPath)
+		}
 		logger.Info("generated tools from schema", "count", len(appCfg.Tools))
 	}
 
