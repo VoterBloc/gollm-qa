@@ -232,7 +232,7 @@ func TestDriver_Purge(t *testing.T) {
 		PurgeResultPath: "data.purgeTestData",
 	}
 	drv := New(cfg, nil)
-	drv.authToken = "admin-jwt-loch-ness"
+	drv.SetAuthToken("admin-jwt-loch-ness")
 
 	report, err := drv.Purge(context.Background())
 	if err != nil {
@@ -274,7 +274,7 @@ func TestDriver_Purge_GraphQLError(t *testing.T) {
 		PurgeResultPath: "data.purgeTestData",
 	}
 	drv := New(cfg, nil)
-	drv.authToken = "non-admin-jwt"
+	drv.SetAuthToken("non-admin-jwt")
 
 	_, err := drv.Purge(context.Background())
 	if err == nil {
@@ -299,7 +299,7 @@ func TestDriver_Purge_MissingResultPath(t *testing.T) {
 		PurgeResultPath: "data.purgeTestData",
 	}
 	drv := New(cfg, nil)
-	drv.authToken = "jwt"
+	drv.SetAuthToken("jwt")
 
 	_, err := drv.Purge(context.Background())
 	if err == nil {

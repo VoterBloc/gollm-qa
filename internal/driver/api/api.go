@@ -53,6 +53,13 @@ func New(cfg *config.AppConfig, logger *slog.Logger) *Driver {
 	}
 }
 
+// SetAuthToken installs a pre-issued auth token directly, bypassing the
+// login round-trip. Used by admin flows (e.g. purge) that authenticate
+// with a long-lived token instead of email/password.
+func (d *Driver) SetAuthToken(token string) {
+	d.authToken = token
+}
+
 // Login authenticates with the target app and stores the token.
 func (d *Driver) Login(ctx context.Context, identifier, password string) error {
 	variables := map[string]any{

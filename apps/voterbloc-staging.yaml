@@ -53,8 +53,7 @@ tools_exclude:
 # TEST_DATA_PURGE feature flag (true on staging) and admin role; landed in
 # VoterBloc/voterbloc#1723.
 admin:
-  identifier_env: VOTERBLOC_ADMIN_EMAIL
-  password_env: VOTERBLOC_ADMIN_PASSWORD
+  token_env: VOTERBLOC_ADMIN_TOKEN
   purge_query: |
     mutation PurgeTestData {
       purgeTestData {

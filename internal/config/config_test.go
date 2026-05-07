@@ -161,8 +161,7 @@ auth:
     }
   token_path: "data.login.token"
 admin:
-  identifier_env: SQUATCH_ADMIN_EMAIL
-  password_env: SQUATCH_ADMIN_PASSWORD
+  token_env: SQUATCH_ADMIN_TOKEN
   purge_query: |
     mutation { purgeTestData { byTable { table deleted } total } }
   purge_result_path: "data.purgeTestData"
@@ -175,11 +174,8 @@ tools: []
 		t.Fatalf("LoadAppConfig() error: %v", err)
 	}
 
-	if cfg.Admin.IdentifierEnv != "SQUATCH_ADMIN_EMAIL" {
-		t.Errorf("unexpected identifier_env: %q", cfg.Admin.IdentifierEnv)
-	}
-	if cfg.Admin.PasswordEnv != "SQUATCH_ADMIN_PASSWORD" {
-		t.Errorf("unexpected password_env: %q", cfg.Admin.PasswordEnv)
+	if cfg.Admin.TokenEnv != "SQUATCH_ADMIN_TOKEN" {
+		t.Errorf("unexpected token_env: %q", cfg.Admin.TokenEnv)
 	}
 	if cfg.Admin.PurgeQuery == "" {
 		t.Error("expected purge_query to be populated")
