@@ -247,14 +247,13 @@ func purgeCmd(args []string) error {
 	if appCfg.Admin.PurgeQuery == "" {
 		return fmt.Errorf("config %s has no admin.purge_query — purge unavailable for this app", configPath)
 	}
-	if appCfg.Admin.IdentifierEnv == "" || appCfg.Admin.PasswordEnv == "" {
-		return fmt.Errorf("config %s is missing admin.identifier_env or admin.password_env", configPath)
+	if appCfg.Admin.TokenEnv == "" {
+		return fmt.Errorf("config %s is missing admin.token_env", configPath)
 	}
 
-	adminID := os.Getenv(appCfg.Admin.IdentifierEnv)
-	adminPW := os.Getenv(appCfg.Admin.PasswordEnv)
-	if adminID == "" || adminPW == "" {
-		return fmt.Errorf("admin credentials not set: export %s and %s", appCfg.Admin.IdentifierEnv, appCfg.Admin.PasswordEnv)
+	adminToken := os.Getenv(appCfg.Admin.TokenEnv)
+	if adminToken == "" {
+		return fmt.Errorf("admin token not set: export %s", appCfg.Admin.TokenEnv)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -271,12 +270,9 @@ func purgeCmd(args []string) error {
 	}
 
 	drv := apidriver.New(appCfg, logger)
-	logger.Info("authenticating as admin", "identifier", adminID)
-	if err := drv.Login(ctx, adminID, adminPW); err != nil {
-		return fmt.Errorf("admin login: %w", err)
-	}
+	drv.SetAuthToken(adminToken)
 
-	logger.Info("running purge")
+	logger.Info("running purge", "token_env", appCfg.Admin.TokenEnv)
 	report, err := drv.Purge(ctx)
 	if err != nil {
 		return fmt.Errorf("purge: %w", err)

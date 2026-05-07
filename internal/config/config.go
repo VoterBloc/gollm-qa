@@ -45,14 +45,14 @@ type AppConfig struct {
 	ToolsExclude []string `yaml:"tools_exclude,omitempty"`
 }
 
-// AdminConfig describes admin-only operations (data purge, etc.). Reuses
-// AppConfig.Auth's login mutation — admin and regular users share the same
-// login surface in the apps we currently target.
+// AdminConfig describes admin-only operations (data purge, etc.). The admin
+// path uses a pre-issued long-lived token rather than a login round-trip — a
+// leaked .env should grant only what the token allows, not interactive admin
+// access.
 type AdminConfig struct {
-	// IdentifierEnv is the env var name to read the admin identifier from.
-	IdentifierEnv string `yaml:"identifier_env"`
-	// PasswordEnv is the env var name to read the admin password from.
-	PasswordEnv string `yaml:"password_env"`
+	// TokenEnv is the env var name to read the admin auth token from. The
+	// driver places the token directly into the auth header; no login call.
+	TokenEnv string `yaml:"token_env"`
 	// PurgeQuery is the GraphQL mutation that wipes synthetic data.
 	PurgeQuery string `yaml:"purge_query"`
 	// PurgeResultPath is a gjson path to the purge report inside the response.
