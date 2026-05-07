@@ -30,6 +30,19 @@ type AppConfig struct {
 	// per-persona register_input blocks; runtime registration uses whatever
 	// the persona YAML already contains.
 	PersonaRegisterTemplate map[string]string `yaml:"persona_register_template,omitempty"`
+	// ToolsFromSchema, when true, makes `gollm run` introspect the target
+	// app's GraphQL schema and use the discovered queries/mutations as the
+	// agent's tool set. Replaces (does not merge with) any hand-written
+	// `tools:` block. Catches schema drift at config-load time rather than
+	// on first call.
+	ToolsFromSchema bool `yaml:"tools_from_schema,omitempty"`
+	// ToolsInclude, when set, restricts auto-generated tools to the named
+	// GraphQL operations (camelCase, as on Query/Mutation). Empty = include
+	// everything. Only meaningful with ToolsFromSchema.
+	ToolsInclude []string `yaml:"tools_include,omitempty"`
+	// ToolsExclude removes named operations from the auto-generated set.
+	// Applied after ToolsInclude. Only meaningful with ToolsFromSchema.
+	ToolsExclude []string `yaml:"tools_exclude,omitempty"`
 }
 
 // AdminConfig describes admin-only operations (data purge, etc.). Reuses

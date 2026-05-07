@@ -1,0 +1,260 @@
+package introspect
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/VoterBloc/gollm-qa/internal/config"
+)
+
+// Options control which operations become tools and how nested objects expand
+// in the auto-generated selection sets.
+type Options struct {
+	// Include is an optional allowlist of GraphQL field names (camelCase, as
+	// they appear on Query/Mutation). Empty = include everything.
+	Include []string
+	// Exclude is an optional denylist. Applied after Include.
+	Exclude []string
+	// MaxSelectionDepth caps how deep object expansion goes in selection sets.
+	// 1 means "scalars on the top type only"; 2 means "scalars on top type
+	// plus scalars one layer down through nested objects." Default 2.
+	MaxSelectionDepth int
+}
+
+// GenerateTools walks the schema and returns a ToolConfig per top-level
+// query and mutation field. The generated configs are drop-in replacements
+// for hand-written entries in apps/<app>.yaml's tools block.
+func GenerateTools(schema *Schema, opts Options) []config.ToolConfig {
+	if opts.MaxSelectionDepth <= 0 {
+		opts.MaxSelectionDepth = 2
+	}
+
+	include := stringSet(opts.Include)
+	exclude := stringSet(opts.Exclude)
+
+	var tools []config.ToolConfig
+
+	if schema.QueryType != nil {
+		queryType := schema.TypeByName(schema.QueryType.Name)
+		if queryType != nil {
+			for _, field := range queryType.Fields {
+				if shouldSkip(field.Name, include, exclude) {
+					continue
+				}
+				tools = append(tools, generateTool(schema, "query", field, opts))
+			}
+		}
+	}
+	if schema.MutationType != nil {
+		mutType := schema.TypeByName(schema.MutationType.Name)
+		if mutType != nil {
+			for _, field := range mutType.Fields {
+				if shouldSkip(field.Name, include, exclude) {
+					continue
+				}
+				tools = append(tools, generateTool(schema, "mutation", field, opts))
+			}
+		}
+	}
+	return tools
+}
+
+func shouldSkip(name string, include, exclude map[string]bool) bool {
+	if strings.HasPrefix(name, "__") {
+		return true // GraphQL meta-queries
+	}
+	if len(include) > 0 && !include[name] {
+		return true
+	}
+	if exclude[name] {
+		return true
+	}
+	return false
+}
+
+func generateTool(schema *Schema, opType string, field Field, opts Options) config.ToolConfig {
+	tc := config.ToolConfig{
+		Name:        camelToSnake(field.Name),
+		Description: descriptionOrFallback(field, opType),
+		Parameters:  argsToParams(schema, field.Args),
+		Query:       buildOperation(schema, opType, field, opts),
+		ResultPath:  "data." + field.Name,
+	}
+	return tc
+}
+
+func descriptionOrFallback(field Field, opType string) string {
+	if d := strings.TrimSpace(field.Description); d != "" {
+		return d
+	}
+	return fmt.Sprintf("%s the %s GraphQL %s.", strings.Title(opType[:1])+opType[1:], field.Name, opType) //nolint:staticcheck
+}
+
+// argsToParams converts GraphQL arguments to gollm's ParamConfig. For
+// scalar/enum/list args we emit one param per arg. For input-object args we
+// flatten the input's fields one level — the LLM provides a nested object
+// keyed by the arg name and the driver passes it through as a variable.
+func argsToParams(schema *Schema, args []InputValue) []config.ParamConfig {
+	params := make([]config.ParamConfig, 0, len(args))
+	for _, arg := range args {
+		params = append(params, config.ParamConfig{
+			Name:        arg.Name,
+			Type:        gqlToParamType(arg.Type),
+			Description: argDescription(schema, arg),
+			Required:    arg.Type.IsRequired(),
+		})
+	}
+	return params
+}
+
+// gqlToParamType maps a GraphQL TypeRef to one of the strings ParamConfig
+// expects ("string", "integer", "boolean", "number"). Lists and input
+// objects collapse to "string" today since ParamConfig doesn't model nested
+// shapes; the description carries the structural hint instead.
+func gqlToParamType(t *TypeRef) string {
+	u := t.Unwrap()
+	if u == nil {
+		return "string"
+	}
+	switch u.Kind {
+	case "SCALAR":
+		switch u.Name {
+		case "Int":
+			return "integer"
+		case "Float":
+			return "number"
+		case "Boolean":
+			return "boolean"
+		default:
+			return "string" // String, ID, Date, custom scalars
+		}
+	case "ENUM":
+		return "string"
+	default:
+		return "string"
+	}
+}
+
+// argDescription combines the GraphQL description with a structural hint so
+// the LLM knows what shape to provide for non-scalar args (lists, inputs).
+func argDescription(schema *Schema, arg InputValue) string {
+	desc := strings.TrimSpace(arg.Description)
+	shape := arg.Type.GraphQLString()
+	if arg.Type.IsList() {
+		shape += " (pass as a JSON array)"
+	}
+	if u := arg.Type.Unwrap(); u != nil && u.Kind == "INPUT_OBJECT" {
+		// Add a one-line summary of the input object's required fields.
+		if def := schema.TypeByName(u.Name); def != nil && len(def.InputFields) > 0 {
+			var fields []string
+			for _, f := range def.InputFields {
+				name := f.Name
+				if f.Type.IsRequired() {
+					name += "!"
+				}
+				fields = append(fields, name)
+			}
+			shape += fmt.Sprintf(" (object with fields: %s)", strings.Join(fields, ", "))
+		}
+	}
+	if desc == "" {
+		return shape
+	}
+	return desc + " — " + shape
+}
+
+// buildOperation renders the full GraphQL operation string, including the
+// header (variable declarations) and the body (field call + selection set).
+func buildOperation(schema *Schema, opType string, field Field, opts Options) string {
+	var b strings.Builder
+
+	header := operationHeader(opType, field)
+	b.WriteString(header)
+	b.WriteString(" {\n  ")
+	b.WriteString(field.Name)
+	if len(field.Args) > 0 {
+		b.WriteString("(")
+		for i, arg := range field.Args {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(arg.Name)
+			b.WriteString(": $")
+			b.WriteString(arg.Name)
+		}
+		b.WriteString(")")
+	}
+
+	selection := renderSelection(schema, field.Type, 1, opts.MaxSelectionDepth)
+	if selection != "" {
+		b.WriteString(" ")
+		b.WriteString(selection)
+	}
+	b.WriteString("\n}\n")
+	return b.String()
+}
+
+func operationHeader(opType string, field Field) string {
+	name := strings.Title(opType[:1]) + opType[1:] + "_" + field.Name //nolint:staticcheck
+	if len(field.Args) == 0 {
+		return opType + " " + name
+	}
+	var parts []string
+	for _, arg := range field.Args {
+		parts = append(parts, "$"+arg.Name+": "+arg.Type.GraphQLString())
+	}
+	return fmt.Sprintf("%s %s(%s)", opType, name, strings.Join(parts, ", "))
+}
+
+// renderSelection produces a `{ field1 field2 nested { sub1 sub2 } }`
+// selection set for the given return type. It expands object subfields up
+// to maxDepth layers; beyond that, nested objects are dropped (the LLM
+// won't see them in responses, but the call still succeeds — vs. asking
+// for fields that don't exist, which fails the whole operation).
+func renderSelection(schema *Schema, t *TypeRef, depth, maxDepth int) string {
+	u := t.Unwrap()
+	if u == nil || u.Kind == "SCALAR" || u.Kind == "ENUM" {
+		return "" // leaf — no selection set needed
+	}
+	def := schema.TypeByName(u.Name)
+	if def == nil || len(def.Fields) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, f := range def.Fields {
+		// Skip fields that take args at the leaf level — invoking them would
+		// require choosing argument values, which auto-generation can't do.
+		if len(f.Args) > 0 {
+			continue
+		}
+		if f.Type.IsScalarOrEnum() {
+			parts = append(parts, f.Name)
+			continue
+		}
+		if depth >= maxDepth {
+			continue
+		}
+		sub := renderSelection(schema, f.Type, depth+1, maxDepth)
+		if sub != "" {
+			parts = append(parts, f.Name+" "+sub)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	return "{ " + strings.Join(parts, " ") + " }"
+}
+
+func stringSet(items []string) map[string]bool {
+	if len(items) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(items))
+	for _, s := range items {
+		m[s] = true
+	}
+	return m
+}
