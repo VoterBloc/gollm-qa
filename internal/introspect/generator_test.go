@@ -391,6 +391,37 @@ func TestGenerateTools_SelfReferentialInputCappedByDepth(t *testing.T) {
 	if depth > maxInputObjectDepth+2 {
 		t.Errorf("expected expansion bounded by maxInputObjectDepth, got depth %d", depth)
 	}
+
+	// At the truncation boundary the recursion stops with no Properties.
+	// Verify the LLM still gets the type name as a description hint, so
+	// the schema isn't a bare {"type": "object"} with no shape info.
+	truncated := findTruncatedObject(tc.Parameters[0])
+	if truncated == nil {
+		t.Fatal("expected to find a truncated INPUT_OBJECT in the tree")
+	}
+	if !strings.Contains(truncated.Description, "FilterInput") {
+		t.Errorf("expected truncated object description to mention type name, got %q", truncated.Description)
+	}
+}
+
+// findTruncatedObject walks the param tree looking for a node where the
+// depth cap halted INPUT_OBJECT expansion: type=object, no Properties,
+// no Items.
+func findTruncatedObject(p config.ParamConfig) *config.ParamConfig {
+	if p.Type == "object" && len(p.Properties) == 0 && p.Items == nil {
+		return &p
+	}
+	for _, sub := range p.Properties {
+		if hit := findTruncatedObject(sub); hit != nil {
+			return hit
+		}
+	}
+	if p.Items != nil {
+		if hit := findTruncatedObject(*p.Items); hit != nil {
+			return hit
+		}
+	}
+	return nil
 }
 
 func paramDepth(p config.ParamConfig) int {

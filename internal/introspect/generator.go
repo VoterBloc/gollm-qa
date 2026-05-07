@@ -138,21 +138,31 @@ func argsToParams(schema *Schema, args []InputValue) []config.ParamConfig {
 // outermost NON_NULL determines Required; all inner NON_NULLs are unwrapped
 // to find the underlying kind (SCALAR/ENUM/LIST/INPUT_OBJECT).
 func gqlInputToParam(schema *Schema, name, desc string, t *TypeRef, depth int) config.ParamConfig {
-	required := t.IsRequired()
-	inner := t
-	if inner.Kind == "NON_NULL" {
-		inner = inner.OfType
-	}
-
 	p := config.ParamConfig{
 		Name:        name,
 		Description: strings.TrimSpace(desc),
-		Required:    required,
+		Type:        "string",
+	}
+	// Malformed introspection (missing TypeRef, or NON_NULL/LIST without
+	// OfType) falls back to a plain string param rather than panicking.
+	if t == nil {
+		return p
+	}
+	p.Required = t.IsRequired()
+	inner := t
+	if inner.Kind == "NON_NULL" {
+		if inner.OfType == nil {
+			return p
+		}
+		inner = inner.OfType
 	}
 
 	switch inner.Kind {
 	case "LIST":
 		p.Type = "array"
+		if inner.OfType == nil {
+			break
+		}
 		// The element type may itself be NON_NULL; recurse normally and
 		// let the called function unwrap.
 		elem := gqlInputToParam(schema, "", "", inner.OfType, depth+1)
@@ -171,7 +181,13 @@ func gqlInputToParam(schema *Schema, name, desc string, t *TypeRef, depth int) c
 	case "INPUT_OBJECT":
 		p.Type = "object"
 		if depth >= maxInputObjectDepth {
-			break // safety stop for self-referential inputs
+			// Recursion truncated. Without a hint the LLM sees a bare
+			// {"type": "object"} with no shape info; surface the type
+			// name so it has something to reason about.
+			if p.Description == "" && inner.Name != "" {
+				p.Description = fmt.Sprintf("%s (nested structure, recursion truncated)", inner.Name)
+			}
+			break
 		}
 		def := schema.TypeByName(inner.Name)
 		if def == nil {
