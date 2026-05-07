@@ -19,6 +19,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/agent"
 	"github.com/VoterBloc/gollm-qa/internal/config"
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
+	"github.com/VoterBloc/gollm-qa/internal/introspect"
 	"github.com/VoterBloc/gollm-qa/internal/persona"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
@@ -126,6 +127,28 @@ func runCmd(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	if appCfg.ToolsFromSchema {
+		logger.Info("introspecting GraphQL schema", "base_url", appCfg.BaseURL)
+		schema, err := introspect.Introspect(ctx, appCfg.BaseURL, nil)
+		if err != nil {
+			return fmt.Errorf("introspecting schema: %w", err)
+		}
+		var unmatched []string
+		appCfg.Tools, unmatched = introspect.GenerateTools(schema, introspect.Options{
+			Include: appCfg.ToolsInclude,
+			Exclude: appCfg.ToolsExclude,
+		})
+		if len(unmatched) > 0 {
+			// Almost always a snake_case-vs-camelCase mistake. Surface loud.
+			logger.Warn("tools_include / tools_exclude entries did not match any schema operation",
+				"unmatched", unmatched)
+		}
+		if len(appCfg.Tools) == 0 {
+			return fmt.Errorf("introspection produced zero tools — check tools_include / tools_exclude in %s", configPath)
+		}
+		logger.Info("generated tools from schema", "count", len(appCfg.Tools))
+	}
 
 	agentCfg := agent.Config{
 		MaxSteps:  maxSteps,

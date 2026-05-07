@@ -1,5 +1,5 @@
-name: VoterBloc
-base_url: http://localhost:8080/graphql
+name: VoterBloc (staging)
+base_url: https://api.staging.voterbloc.com/graphql
 
 auth:
   type: graphql
@@ -19,7 +19,7 @@ auth:
     mutation RegisterForTest($input: RegisterInput!) {
       registerForTest(input: $input) {
         token
-        user { id username email isTestUser }
+        user { id username email }
       }
     }
   register_token_path: "data.registerForTest.token"
@@ -37,6 +37,17 @@ persona_register_template:
   firstName: "{{firstName}}"
   lastName: "{{lastName}}"
 
+tools_from_schema: true
+# Drop a few mutations that synthetic users shouldn't be poking. The
+# rest of the schema is auto-discovered.
+tools_exclude:
+  - registerForTest
+  - login
+  - register
+  - refreshToken
+  - logout
+  - purgeTestData
+
 # Admin operations. purge_query wipes synthetic data between runs by deleting
 # every row whose user-axis resolves to is_test_user=true. Gated on the
 # TEST_DATA_PURGE feature flag (true on staging) and admin role; landed in
@@ -52,15 +63,3 @@ admin:
       }
     }
   purge_result_path: "data.purgeTestData"
-
-# Auto-discover tools from the running schema. Drop a few mutations that
-# synthetic users shouldn't touch — auth and admin-only ops.
-tools_from_schema: true
-tools_exclude:
-  - registerForTest
-  - login
-  - register
-  - refreshToken
-  - logout
-  - purgeTestData
-
