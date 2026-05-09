@@ -7,12 +7,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// clockSkewLeeway tolerates small clock differences between the panel
+// (token issuer side) and the engine (token validator side). 30s
+// matches what most JWT libraries default to and what Auth0 / Clerk's
+// own server SDKs use.
+const clockSkewLeeway = 30 * time.Second
 
 // userIDKey is the request-context key under which validated Clerk user
 // ids are stored. Unexported (using a typed key) so other packages can't
@@ -57,6 +64,11 @@ func clerkAuth(issuer string, logger *slog.Logger) (func(http.Handler) http.Hand
 	issuer = strings.TrimRight(issuer, "/")
 	jwksURL := issuer + "/.well-known/jwks.json"
 
+	// Surface a security-relevant footgun: a production deploy with a
+	// plaintext issuer URL would have its JWKS fetched in the clear.
+	// Loopback addresses are exempt because tests use them.
+	warnIfPlaintextNonLoopback(issuer, logger)
+
 	// Probe the JWKS endpoint up front so misconfiguration (typos in
 	// the issuer URL, wrong protocol, etc.) fails at startup instead of
 	// on the first request. keyfunc.NewDefault by itself runs the
@@ -79,7 +91,7 @@ func clerkAuth(issuer string, logger *slog.Logger) (func(http.Handler) http.Hand
 				return
 			}
 
-			raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			raw, ok := stripBearer(r.Header.Get("Authorization"))
 			if !ok || raw == "" {
 				logger.Info("auth rejected", "reason", "missing-bearer", "path", r.URL.Path)
 				writeAuthError(w, "missing bearer token")
@@ -90,6 +102,7 @@ func clerkAuth(issuer string, logger *slog.Logger) (func(http.Handler) http.Hand
 				jwt.WithIssuer(issuer),
 				jwt.WithValidMethods([]string{"RS256"}),
 				jwt.WithExpirationRequired(),
+				jwt.WithLeeway(clockSkewLeeway),
 			)
 			if err != nil {
 				logger.Info("auth rejected", "reason", classifyJWTError(err), "path", r.URL.Path)
@@ -141,6 +154,34 @@ func writeAuthError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// stripBearer returns the token portion of an "Authorization: Bearer
+// <token>" header value. The scheme match is case-insensitive per RFC
+// 6750 §2.1, so `bearer ` and `BEARER ` both work.
+func stripBearer(authHeader string) (string, bool) {
+	if len(authHeader) <= len("Bearer ") {
+		return "", false
+	}
+	if !strings.EqualFold(authHeader[:len("Bearer ")], "Bearer ") {
+		return "", false
+	}
+	return authHeader[len("Bearer "):], true
+}
+
+// warnIfPlaintextNonLoopback logs a warning if the issuer URL uses
+// http:// to a non-loopback host. JWKS over plaintext on the public
+// internet is MITM-able; in dev, loopback addresses are exempt.
+func warnIfPlaintextNonLoopback(issuer string, logger *slog.Logger) {
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme != "http" {
+		return
+	}
+	host := u.Hostname()
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return
+	}
+	logger.Warn("clerk-issuer uses http:// to a non-loopback host — JWKS will be fetched in plaintext", "issuer", issuer)
 }
 
 // probeJWKS does a one-shot GET on the JWKS URL with a short timeout

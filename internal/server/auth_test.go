@@ -227,6 +227,35 @@ func TestClerkAuth_AttachesUserIDToContext(t *testing.T) {
 	}
 }
 
+func TestClerkAuth_AcceptsLowercaseBearerScheme(t *testing.T) {
+	f := newJWKSFixture(t)
+	srv := mustNewServer(t, Config{ClerkIssuer: f.issuer()})
+	tok := f.signToken(t, f.issuer(), "user_skunk_ape", time.Now().Add(time.Hour))
+
+	// RFC 6750 §2.1 declares the auth scheme case-insensitive; some HTTP
+	// libraries lowercase by convention.
+	req := httptest.NewRequest(http.MethodGet, "/v1/configs", nil)
+	req.Header.Set("Authorization", "bearer "+tok)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("lowercase bearer: want 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+func TestClerkAuth_AllowsClockSkew(t *testing.T) {
+	f := newJWKSFixture(t)
+	srv := mustNewServer(t, Config{ClerkIssuer: f.issuer()})
+
+	// Token expired 10 seconds ago — should still be accepted under the
+	// 30-second clock-skew leeway.
+	tok := f.signToken(t, f.issuer(), "user_chessie", time.Now().Add(-10*time.Second))
+	w := doAuthed(t, srv, http.MethodGet, "/v1/configs", tok)
+	if w.Code != http.StatusOK {
+		t.Errorf("recently-expired token within leeway: want 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
 func TestClerkAuth_FailsFastOnUnreachableJWKS(t *testing.T) {
 	// Issuer points to nothing — JWKS fetch should fail and New should
 	// return an error rather than serving requests it can't authenticate.

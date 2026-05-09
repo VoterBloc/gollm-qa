@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealth_ReturnsOK(t *testing.T) {
-	srv, _ := New(Config{}, nil)
+	srv := mustNewServer(t, Config{})
 	w := do(t, srv, http.MethodGet, "/health")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
@@ -30,7 +30,7 @@ func TestListConfigs_ReturnsSortedYAMLFiles(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "README.md"), "ignored")
 	mustMkdir(t, filepath.Join(dir, "ignored-subdir"))
 
-	srv, _ := New(Config{ConfigsDir: dir}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: dir})
 	w := do(t, srv, http.MethodGet, "/v1/configs")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d: %s", w.Code, w.Body.String())
@@ -57,7 +57,7 @@ func TestListConfigs_ReturnsSortedYAMLFiles(t *testing.T) {
 }
 
 func TestListConfigs_MissingDirIsEmpty(t *testing.T) {
-	srv, _ := New(Config{ConfigsDir: "/nonexistent/path/to/cryptid-archive"}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: "/nonexistent/path/to/cryptid-archive"})
 	w := do(t, srv, http.MethodGet, "/v1/configs")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200 (empty list), got %d", w.Code)
@@ -75,7 +75,7 @@ func TestListCampaigns_ReturnsYAMLFiles(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "lure-the-mothman.yaml"), "name: mothman")
 
-	srv, _ := New(Config{CampaignsDir: dir}, nil)
+	srv := mustNewServer(t, Config{CampaignsDir: dir})
 	w := do(t, srv, http.MethodGet, "/v1/campaigns")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
@@ -104,7 +104,7 @@ func TestListPersonas_DistinguishesFilesAndCollections(t *testing.T) {
 	// Empty collection should report count=0.
 	mustMkdir(t, filepath.Join(dir, "abandoned-coven"))
 
-	srv, _ := New(Config{PersonasDir: dir}, nil)
+	srv := mustNewServer(t, Config{PersonasDir: dir})
 	w := do(t, srv, http.MethodGet, "/v1/personas")
 
 	var got struct {
@@ -129,7 +129,7 @@ func TestListPersonas_DistinguishesFilesAndCollections(t *testing.T) {
 }
 
 func TestOpenAPISpec_IsValidJSONAndAdvertisesPaths(t *testing.T) {
-	srv, _ := New(Config{}, nil)
+	srv := mustNewServer(t, Config{})
 	w := do(t, srv, http.MethodGet, "/openapi.json")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
@@ -156,6 +156,20 @@ func TestOpenAPISpec_IsValidJSONAndAdvertisesPaths(t *testing.T) {
 }
 
 // --- helpers ---
+
+// mustNewServer is the test counterpart to server.New that fails the
+// test on any construction error. Cleaner than `srv, _ := New(...)` —
+// pins down the invariant that dev-mode New shouldn't fail, so a
+// future change that introduces a new error path can't silently slip
+// past tests.
+func mustNewServer(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	s, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	return s
+}
 
 func do(t *testing.T, srv *Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
