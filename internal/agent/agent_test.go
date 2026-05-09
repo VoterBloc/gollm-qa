@@ -751,6 +751,143 @@ func TestAgent_GoalFuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestAgent_OnEventFiresThroughLifecycle(t *testing.T) {
+	drv := newMockDriver()
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_swamp", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 80, OutputTokens: 12},
+			},
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{
+							ID:        "toolu_obs",
+							Name:      "report_ux_observation",
+							Arguments: `{"observation":"the swamp creature filter has no zoom","severity":"warning"}`,
+						},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 95, OutputTokens: 18},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "All set."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 110, OutputTokens: 10},
+			},
+		},
+	}
+
+	var events []Event
+	cfg := DefaultConfig()
+	cfg.OnEvent = func(ev Event) { events = append(events, ev) }
+
+	a := New(testPersona(), prov, drv, cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if session.Steps == 0 {
+		t.Fatalf("expected the agent to take at least one step")
+	}
+
+	// First and last events bracket the run.
+	if len(events) < 2 {
+		t.Fatalf("expected at least session_start and session_end events, got %d", len(events))
+	}
+	if events[0].Kind != EventSessionStart {
+		t.Errorf("first event: want %q, got %q", EventSessionStart, events[0].Kind)
+	}
+	if events[len(events)-1].Kind != EventSessionEnd {
+		t.Errorf("last event: want %q, got %q", EventSessionEnd, events[len(events)-1].Kind)
+	}
+
+	// At least one step event with non-empty actions.
+	var sawStep bool
+	for _, ev := range events {
+		if ev.Kind != EventStep {
+			continue
+		}
+		actions, ok := ev.Payload.([]Action)
+		if !ok {
+			t.Errorf("step event payload: want []Action, got %T", ev.Payload)
+			continue
+		}
+		if len(actions) > 0 {
+			sawStep = true
+		}
+	}
+	if !sawStep {
+		t.Errorf("expected at least one step event with actions, got events: %v", kinds(events))
+	}
+
+	// The UX observation tool call should have produced an observation event
+	// with the recorded note.
+	var sawObservation bool
+	for _, ev := range events {
+		if ev.Kind != EventObservation {
+			continue
+		}
+		note, ok := ev.Payload.(UXNote)
+		if !ok {
+			t.Errorf("observation event payload: want UXNote, got %T", ev.Payload)
+			continue
+		}
+		if note.Severity != "warning" {
+			t.Errorf("observation severity: want warning, got %q", note.Severity)
+		}
+		if !contains(note.Observation, "swamp creature") {
+			t.Errorf("observation text: want swamp-creature note, got %q", note.Observation)
+		}
+		sawObservation = true
+	}
+	if !sawObservation {
+		t.Errorf("expected an observation event from report_ux_observation, got events: %v", kinds(events))
+	}
+
+	// The session_end payload is the full Session pointer.
+	endEvent := events[len(events)-1]
+	if endSession, ok := endEvent.Payload.(*Session); !ok {
+		t.Errorf("session_end payload: want *Session, got %T", endEvent.Payload)
+	} else if endSession != session {
+		t.Errorf("session_end payload should match returned session")
+	}
+}
+
+func TestAgent_OnEventNilIsAllowed(t *testing.T) {
+	// Default config has OnEvent=nil; the agent must not blow up.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+		},
+	}
+	a := New(testPersona(), prov, newMockDriver(), DefaultConfig(), nil)
+	if _, err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run() with nil OnEvent: %v", err)
+	}
+}
+
+func kinds(events []Event) []EventKind {
+	out := make([]EventKind, len(events))
+	for i, e := range events {
+		out[i] = e.Kind
+	}
+	return out
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
