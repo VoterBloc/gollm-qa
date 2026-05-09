@@ -113,13 +113,20 @@ type ParamConfig struct {
 	EnumValues []string `yaml:"enum,omitempty"`
 }
 
-// LoadAppConfig reads and parses an app config YAML file.
+// LoadAppConfig reads an app config YAML file and parses it.
 func LoadAppConfig(path string) (*AppConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading app config: %w", err)
 	}
+	return ParseAppConfig(data)
+}
 
+// ParseAppConfig parses raw YAML (or JSON, since JSON is valid YAML)
+// bytes into an AppConfig. Applies defaults and runs validation. Used
+// by LoadAppConfig and by the HTTP server's inline-config path so both
+// loading routes share the same defaults / validation.
+func ParseAppConfig(data []byte) (*AppConfig, error) {
 	var cfg AppConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing app config: %w", err)
@@ -191,16 +198,25 @@ func LoadPersonas(dir string) ([]*agent.Persona, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading persona %s: %w", entry.Name(), err)
 		}
-
-		var p agent.Persona
-		if err := yaml.Unmarshal(data, &p); err != nil {
+		p, err := ParsePersona(data)
+		if err != nil {
 			return nil, fmt.Errorf("parsing persona %s: %w", entry.Name(), err)
 		}
-
-		personas = append(personas, &p)
+		personas = append(personas, p)
 	}
 
 	return personas, nil
+}
+
+// ParsePersona parses raw YAML (or JSON, since JSON is valid YAML)
+// bytes into a Persona. Used by LoadPersonas and by the HTTP server's
+// inline-personas path so both loading routes share the same shape.
+func ParsePersona(data []byte) (*agent.Persona, error) {
+	var p agent.Persona
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // ToProviderTool converts a ToolConfig to the provider.Tool format the LLM
