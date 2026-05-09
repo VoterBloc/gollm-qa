@@ -16,7 +16,7 @@ const (
 	EventStep EventKind = "step"
 
 	// EventObservation fires when the agent invokes the
-	// record_ux_observation builtin. Payload is UXNote.
+	// report_ux_observation builtin. Payload is UXNote.
 	EventObservation EventKind = "observation"
 
 	// EventError fires when the agent's loop hits a fatal error

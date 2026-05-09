@@ -26,6 +26,28 @@ import (
 type RunRequest struct {
 	ConfigName string `json:"config_name"`
 	PersonaSet string `json:"persona_set"`
+
+	// MaxSteps caps how many tool-call rounds each agent takes. Optional;
+	// nil/0 falls back to defaultMaxSteps. Capped at maxAllowedSteps as a
+	// runaway-cost guard.
+	MaxSteps int `json:"max_steps,omitempty"`
+}
+
+const (
+	defaultMaxSteps  = 50
+	maxAllowedSteps  = 200
+)
+
+// maxSteps returns the effective per-agent step cap, applying defaults
+// and the ceiling.
+func (r RunRequest) maxSteps() int {
+	if r.MaxSteps <= 0 {
+		return defaultMaxSteps
+	}
+	if r.MaxSteps > maxAllowedSteps {
+		return maxAllowedSteps
+	}
+	return r.MaxSteps
 }
 
 // RunEvent is what the engine streams over SSE — one envelope per agent
@@ -87,18 +109,27 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, errors.New("response writer doesn't support streaming"))
-		return
-	}
+	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no") // hint to nginx/etc. not to buffer
 	w.WriteHeader(http.StatusOK)
 
-	sse := &sseWriter{w: w, flusher: flusher, logger: s.logger}
+	sse := &sseWriter{w: w, rc: rc, logger: s.logger}
+
+	// Probe flushing capability up front. If the underlying writer truly
+	// doesn't support Flush (rare in production, but possible behind some
+	// reverse-proxies), we'd rather fail with a visible run_error than
+	// silently buffer events for the whole run.
+	if err := rc.Flush(); err != nil {
+		sse.writeRunError(fmt.Errorf("response writer doesn't support flushing: %w", err))
+		return
+	}
+
+	stopKeepalive := sse.startKeepalive(r.Context())
+	defer stopKeepalive()
+
 	sse.write(RunEvent{Event: agent.Event{
 		Kind:    runEventStart,
 		At:      time.Now(),
@@ -113,7 +144,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.runAgents(r.Context(), appCfg, personas, sse)
+	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), sse)
 	sse.write(RunEvent{Event: agent.Event{Kind: runEventEnd, At: time.Now()}})
 }
 
@@ -141,7 +172,7 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 // runAgents fans out personas across goroutines (bounded concurrency),
 // each writing events to the shared SSE stream via the persona-tagged
 // callback. Returns when every agent has finished.
-func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, sse *sseWriter) {
+func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, sse *sseWriter) {
 	provFn := s.cfg.ProviderFactory
 	if provFn == nil {
 		provFn = func() provider.Provider { return claude.New() }
@@ -171,7 +202,7 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			drv := drvFn(appCfg, s.logger)
 			llm := provFn()
 			cfg := agent.Config{
-				MaxSteps: 50,
+				MaxSteps: maxSteps,
 				OnEvent: func(ev agent.Event) {
 					sse.write(RunEvent{Persona: p.Name, Event: ev})
 				},
@@ -193,12 +224,13 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 
 // sseWriter serializes writes to the response — multiple agents may
 // emit events concurrently, but http.ResponseWriter is not safe for
-// concurrent use.
+// concurrent use. Flushing goes through http.ResponseController so it
+// walks the wrapper chain (statusRecorder → real writer) properly.
 type sseWriter struct {
-	mu      sync.Mutex
-	w       http.ResponseWriter
-	flusher http.Flusher
-	logger  *slog.Logger
+	mu     sync.Mutex
+	w      http.ResponseWriter
+	rc     *http.ResponseController
+	logger *slog.Logger
 }
 
 func (s *sseWriter) write(ev RunEvent) {
@@ -214,7 +246,9 @@ func (s *sseWriter) write(ev RunEvent) {
 		// cancel on its own and agents will see ctx.Err() shortly.
 		return
 	}
-	s.flusher.Flush()
+	if err := s.rc.Flush(); err != nil {
+		s.logger.Error("flush SSE event", "err", err)
+	}
 }
 
 func (s *sseWriter) writeRunError(err error) {
@@ -223,6 +257,57 @@ func (s *sseWriter) writeRunError(err error) {
 		At:      time.Now(),
 		Payload: map[string]string{"error": err.Error()},
 	}})
+}
+
+// keepaliveInterval is how often the SSE handler sends a comment line
+// to keep the connection alive through reverse-proxies and load
+// balancers. Cloud Run idles connections after ~30s of silence; nginx
+// and corporate proxies tend to be around 60s. 15s gives a comfortable
+// margin without being chatty.
+const keepaliveInterval = 15 * time.Second
+
+// startKeepalive launches a goroutine that writes an SSE comment line
+// (`: keepalive\n\n`, ignored by EventSource clients) on a fixed
+// interval. Stops when ctx is done or when the returned function is
+// called. Callers should defer the returned stop function to ensure
+// the goroutine exits even when the handler returns early via an
+// error path.
+func (s *sseWriter) startKeepalive(ctx context.Context) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(keepaliveInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-t.C:
+				s.writeRaw(": keepalive\n\n")
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+// writeRaw emits a literal byte sequence to the stream — used for the
+// keepalive comment line and any other non-JSON SSE framing. Goes
+// through the same mutex as write() so concurrent emission is safe.
+func (s *sseWriter) writeRaw(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := fmt.Fprint(s.w, text); err != nil {
+		return
+	}
+	if err := s.rc.Flush(); err != nil {
+		s.logger.Error("flush SSE keepalive", "err", err)
+	}
 }
 
 // resolveYAMLByName checks that <dir>/<name>.yaml or .yml exists. Used

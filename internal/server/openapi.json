@@ -190,6 +190,13 @@
           "persona_set": {
             "type": "string",
             "description": "Name of a collection (subdirectory) under personas/."
+          },
+          "max_steps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50,
+            "description": "Per-agent cap on tool-call rounds. Optional; defaults to 50, hard ceiling 200."
           }
         }
       },
