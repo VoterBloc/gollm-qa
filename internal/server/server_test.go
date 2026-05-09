@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealth_ReturnsOK(t *testing.T) {
-	srv := New(Config{}, nil)
+	srv, _ := New(Config{}, nil)
 	w := do(t, srv, http.MethodGet, "/health")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
@@ -30,7 +30,7 @@ func TestListConfigs_ReturnsSortedYAMLFiles(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "README.md"), "ignored")
 	mustMkdir(t, filepath.Join(dir, "ignored-subdir"))
 
-	srv := New(Config{ConfigsDir: dir}, nil)
+	srv, _ := New(Config{ConfigsDir: dir}, nil)
 	w := do(t, srv, http.MethodGet, "/v1/configs")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d: %s", w.Code, w.Body.String())
@@ -57,7 +57,7 @@ func TestListConfigs_ReturnsSortedYAMLFiles(t *testing.T) {
 }
 
 func TestListConfigs_MissingDirIsEmpty(t *testing.T) {
-	srv := New(Config{ConfigsDir: "/nonexistent/path/to/cryptid-archive"}, nil)
+	srv, _ := New(Config{ConfigsDir: "/nonexistent/path/to/cryptid-archive"}, nil)
 	w := do(t, srv, http.MethodGet, "/v1/configs")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200 (empty list), got %d", w.Code)
@@ -75,7 +75,7 @@ func TestListCampaigns_ReturnsYAMLFiles(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "lure-the-mothman.yaml"), "name: mothman")
 
-	srv := New(Config{CampaignsDir: dir}, nil)
+	srv, _ := New(Config{CampaignsDir: dir}, nil)
 	w := do(t, srv, http.MethodGet, "/v1/campaigns")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
@@ -104,7 +104,7 @@ func TestListPersonas_DistinguishesFilesAndCollections(t *testing.T) {
 	// Empty collection should report count=0.
 	mustMkdir(t, filepath.Join(dir, "abandoned-coven"))
 
-	srv := New(Config{PersonasDir: dir}, nil)
+	srv, _ := New(Config{PersonasDir: dir}, nil)
 	w := do(t, srv, http.MethodGet, "/v1/personas")
 
 	var got struct {
@@ -129,7 +129,7 @@ func TestListPersonas_DistinguishesFilesAndCollections(t *testing.T) {
 }
 
 func TestOpenAPISpec_IsValidJSONAndAdvertisesPaths(t *testing.T) {
-	srv := New(Config{}, nil)
+	srv, _ := New(Config{}, nil)
 	w := do(t, srv, http.MethodGet, "/openapi.json")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)

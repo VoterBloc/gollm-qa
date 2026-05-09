@@ -28,6 +28,11 @@ type Config struct {
 	CampaignsDir string // campaigns/
 	PersonasDir  string // personas/
 
+	// ClerkIssuer enables Clerk JWT validation on /v1/* when set (e.g.
+	// "https://your-app.clerk.accounts.dev"). Empty = dev mode, no auth.
+	// /health and /openapi.json stay public regardless.
+	ClerkIssuer string
+
 	// ProviderFactory builds the LLM provider used by each agent in a
 	// run. Nil = default Claude provider (reads ANTHROPIC_API_KEY from
 	// env). Tests inject a stub here to avoid hitting the real API.
@@ -48,19 +53,27 @@ type Server struct {
 
 // New builds a Server with all routes mounted. It does not start listening;
 // call Run for that. A nil logger discards logs (useful in tests).
-func New(cfg Config, logger *slog.Logger) *Server {
+//
+// Returns an error if Clerk is configured (cfg.ClerkIssuer non-empty) and
+// the JWKS fetch fails — better to fail fast at startup than to serve
+// requests that can't be authenticated.
+func New(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	authMW, err := clerkAuth(cfg.ClerkIssuer, logger)
+	if err != nil {
+		return nil, err
 	}
 	s := &Server{cfg: cfg, logger: logger}
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	s.http = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           withRequestLogging(logger, mux),
+		Handler:           withRequestLogging(logger, authMW(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	return s
+	return s, nil
 }
 
 // Handler returns the fully-wrapped HTTP handler. Exposed for tests; in
