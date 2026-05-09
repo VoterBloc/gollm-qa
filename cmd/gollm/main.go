@@ -23,6 +23,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/persona"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
+	"github.com/VoterBloc/gollm-qa/internal/server"
 )
 
 // gjson path keys inside a purgeTestData report. Centralized so the renderer
@@ -51,6 +52,8 @@ func main() {
 		err = purgeCmd(os.Args[2:])
 	case "seed":
 		err = seedCmd(os.Args[2:])
+	case "serve":
+		err = serveCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -73,6 +76,7 @@ Usage:
   gollm seed --config <path> --campaign <path> --output <dir>
   gollm run --config <path> --personas <dir> [flags]
   gollm purge --config <path>
+  gollm serve [--addr :8080] [--apps apps] [--campaigns campaigns] [--personas personas]
 
 Run "gollm <subcommand> -h" for subcommand-specific flags.
 `)
@@ -388,4 +392,35 @@ func seedCmd(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "\nDone. Wrote %d personas to %s/\n", totalWritten, outputDir)
 	return nil
+}
+
+func serveCmd(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	var (
+		addr         string
+		appsDir      string
+		campaignsDir string
+		personasDir  string
+	)
+	fs.StringVar(&addr, "addr", ":8080", "HTTP listen address")
+	fs.StringVar(&appsDir, "apps", "apps", "directory containing app configs (.yaml)")
+	fs.StringVar(&campaignsDir, "campaigns", "campaigns", "directory containing campaign briefs (.yaml)")
+	fs.StringVar(&personasDir, "personas", "personas", "directory containing persona files and collections")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	srv := server.New(server.Config{
+		Addr:         addr,
+		ConfigsDir:   appsDir,
+		CampaignsDir: campaignsDir,
+		PersonasDir:  personasDir,
+	}, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	return srv.Run(ctx)
 }

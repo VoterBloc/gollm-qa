@@ -1,0 +1,148 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "gollm-qa control plane",
+    "description": "HTTP API consumed by the Cohort panel (VoterBloc/cohort). Phase 1 covers read-only directory listing for app configs, campaign briefs, and personas. Run lifecycle, persistence, and SSE event streams arrive in later phases.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Server is up.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/configs": {
+      "get": {
+        "summary": "List app configs",
+        "description": "Returns .yaml files under the apps/ directory.",
+        "operationId": "listConfigs",
+        "responses": {
+          "200": {
+            "description": "Configs found (possibly empty).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileEntryList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns": {
+      "get": {
+        "summary": "List campaign briefs",
+        "description": "Returns .yaml files under the campaigns/ directory.",
+        "operationId": "listCampaigns",
+        "responses": {
+          "200": {
+            "description": "Campaigns found (possibly empty).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileEntryList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas": {
+      "get": {
+        "summary": "List persona files and collections",
+        "description": "Returns top-level entries under personas/. Subdirectories are returned as kind=collection with a count of .yaml files inside; loose .yaml files are returned as kind=file.",
+        "operationId": "listPersonas",
+        "responses": {
+          "200": {
+            "description": "Personas found (possibly empty).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PersonaList" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "example": "ok" }
+        }
+      },
+      "FileEntry": {
+        "type": "object",
+        "required": ["name", "file"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "File stem (no extension). Used for display."
+          },
+          "file": {
+            "type": "string",
+            "description": "Full file name including .yaml/.yml extension."
+          }
+        }
+      },
+      "FileEntryList": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FileEntry" }
+          }
+        }
+      },
+      "PersonaEntry": {
+        "type": "object",
+        "required": ["name", "kind"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["file", "collection"]
+          },
+          "file": {
+            "type": "string",
+            "description": "Set when kind=file; full file name including extension."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Set when kind=collection; number of .yaml files in the collection."
+          }
+        }
+      },
+      "PersonaList": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PersonaEntry" }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" }
+        }
+      }
+    }
+  }
+}
