@@ -183,6 +183,28 @@ func TestCreateRun_RejectsInlineConfigMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestCreateRun_TreatsExplicitNullsAsAbsent(t *testing.T) {
+	// A panel that pre-fills request shapes might send `"config": null`
+	// alongside a real config_name. That should be treated the same as
+	// "config absent", not flagged as mutually-exclusive.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","config":null,"persona_set":"okay","personas":null}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	// Should NOT 400 with mutually-exclusive — should proceed to the
+	// run lifecycle (and presumably 500 once it tries to dial the bogus
+	// base_url, but that's past the validation we care about). We just
+	// assert the status is NOT 400-mutually-exclusive.
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "mutually exclusive") {
+		t.Errorf("explicit null should not trigger mutual-exclusion 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestCreateRun_RejectsInlinePersonasNotArray(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
@@ -599,6 +621,67 @@ behavior: lurker
 	sources, _ := startPayload["sources"].(map[string]any)
 	if sources["config"] != "inline" || sources["personas"] != "name" {
 		t.Errorf("run_start sources: want config=inline + personas=name, got %+v", sources)
+	}
+}
+
+func TestCreateRun_EndToEndSSEStream_NamedConfigInlinePersonas(t *testing.T) {
+	// Symmetric counterpart to MixedInlineAndNamed: named config from
+	// disk + inline personas in the request body. Verifies the
+	// resolution helpers handle either direction of mix.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "swamp-watch.yaml"), validAppConfigYAML())
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Nothing to do."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 20, OutputTokens: 5},
+			},
+		},
+	}
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		ProviderFactory: func() provider.Provider { return prov },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{
+		"config_name": "swamp-watch",
+		"personas": [
+			{
+				"name": "Bayou Lurker",
+				"description": "Cajun country swamp explorer cataloguing cryptid rumors.",
+				"goals": ["Find a bloc to join"],
+				"behavior": "lurker"
+			}
+		]
+	}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, bodyBytes)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	events := parseSSEEvents(t, bodyBytes)
+	startPayload, _ := events[0].Event.Payload.(map[string]any)
+	sources, _ := startPayload["sources"].(map[string]any)
+	if sources["config"] != "name" || sources["personas"] != "inline" {
+		t.Errorf("run_start sources: want config=name + personas=inline, got %+v", sources)
 	}
 }
 

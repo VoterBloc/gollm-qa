@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,19 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 )
+
+// jsonNull matches JSON's null literal — `json.RawMessage` retains the
+// 4-byte literal `null` for explicit nulls, which we want to treat the
+// same as field-absent.
+var jsonNull = []byte("null")
+
+// hasInline reports whether a json.RawMessage represents real content
+// (not absent, not the JSON null literal). Clients that pre-fill
+// request shapes with `null` should be indistinguishable from clients
+// that omit the field entirely.
+func hasInline(raw json.RawMessage) bool {
+	return len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), jsonNull)
+}
 
 // RunRequest is the JSON body shape for POST /v1/runs.
 //
@@ -317,7 +331,7 @@ func (s *sseWriter) writeRaw(text string) {
 // must be set.
 func (s *Server) resolveConfig(req RunRequest) (*config.AppConfig, error) {
 	haveName := req.ConfigName != ""
-	haveInline := len(req.Config) > 0
+	haveInline := hasInline(req.Config)
 	if haveName && haveInline {
 		return nil, errors.New("config_name and config are mutually exclusive — set exactly one")
 	}
@@ -348,7 +362,7 @@ func (s *Server) resolveConfig(req RunRequest) (*config.AppConfig, error) {
 // and the inline array (if used) must be non-empty.
 func (s *Server) resolvePersonas(req RunRequest) ([]*agent.Persona, error) {
 	haveName := req.PersonaSet != ""
-	haveInline := len(req.Personas) > 0
+	haveInline := hasInline(req.Personas)
 	if haveName && haveInline {
 		return nil, errors.New("persona_set and personas are mutually exclusive — set exactly one")
 	}
@@ -400,8 +414,8 @@ func runSources(req RunRequest) map[string]string {
 		}
 	}
 	return map[string]string{
-		"config":   source(req.ConfigName != "", len(req.Config) > 0),
-		"personas": source(req.PersonaSet != "", len(req.Personas) > 0),
+		"config":   source(req.ConfigName != "", hasInline(req.Config)),
+		"personas": source(req.PersonaSet != "", hasInline(req.Personas)),
 	}
 }
 

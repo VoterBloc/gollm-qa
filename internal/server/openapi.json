@@ -76,7 +76,7 @@
     "/v1/runs": {
       "post": {
         "summary": "Execute a run synchronously, streaming events as SSE",
-        "description": "Validates inputs (4xx if config_name or persona_set don't resolve), then sets `Content-Type: text/event-stream` and streams events as the run executes. Each `data:` line is a JSON-encoded RunEvent. The connection lifetime is the run lifetime; the engine forgets the run when the response closes. The panel is expected to persist events as they arrive.\n\nEvent kinds (the `event.kind` field):\n- `run_start` (orchestrator) — payload: `{config, persona_set, agents}`\n- `session_start` (per agent) — payload: null\n- `step` (per agent) — payload: `Action[]` (actions taken during this step)\n- `observation` (per agent) — payload: `UXNote`\n- `error` (per agent) — payload: `AgentError`\n- `session_end` (per agent) — payload: full `Session`\n- `run_end` (orchestrator) — sent once at the end\n- `run_error` (orchestrator) — fatal run-level error (introspection failure, etc.)\n\nPer-agent events carry a non-empty `persona` field; orchestrator events leave it empty.",
+        "description": "Validates inputs (4xx if config_name/persona_set don't resolve, if both forms of either pair are set, or if inline content fails parsing/validation), then sets `Content-Type: text/event-stream` and streams events as the run executes. Each `data:` line is a JSON-encoded RunEvent. The connection lifetime is the run lifetime; the engine forgets the run when the response closes. The panel is expected to persist events as they arrive.\n\nEvent kinds (the `event.kind` field):\n- `run_start` (orchestrator) — payload: `{config, agents, sources}` where `config` is the AppConfig's display name, `agents` is the number of personas being run, and `sources` is `{config: \"name\"|\"inline\", personas: \"name\"|\"inline\"}` reflecting how each input was supplied.\n- `session_start` (per agent) — payload: null\n- `step` (per agent) — payload: `Action[]` (actions taken during this step)\n- `observation` (per agent) — payload: `UXNote`\n- `error` (per agent) — payload: `AgentError`\n- `session_end` (per agent) — payload: full `Session`\n- `run_end` (orchestrator) — sent once at the end\n- `run_error` (orchestrator) — fatal run-level error (introspection failure, etc.)\n\nPer-agent events carry a non-empty `persona` field; orchestrator events leave it empty.",
         "operationId": "createRun",
         "requestBody": {
           "required": true,
@@ -189,7 +189,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Inline app config — same shape as the YAML on disk. Mutually exclusive with `config_name`. The engine validates the same way (required: name, base_url; auth.query and auth.token_path required if auth.type is set; per-tool name and query when tools is non-empty).",
+            "description": "Inline app config — same shape as the YAML on disk. Mutually exclusive with `config_name`. **Keys are snake_case** (e.g. `base_url`, `tools_from_schema`) because the underlying struct uses YAML tags and `yaml.Unmarshal` is what parses the inline JSON. The engine validates the same way as on-disk loads (required: `name`, `base_url`; `auth.query` and `auth.token_path` required if `auth.type` is set; per-tool `name` and `query` when `tools` is non-empty).",
             "additionalProperties": true
           },
           "persona_set": {
