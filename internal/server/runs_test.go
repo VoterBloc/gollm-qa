@@ -35,13 +35,13 @@ func TestCreateRun_RejectsInvalidJSON(t *testing.T) {
 func TestCreateRun_RejectsMissingFields(t *testing.T) {
 	srv := mustNewServer(t, Config{})
 	cases := []struct {
-		name string
-		body string
+		name      string
+		body      string
+		bodyMatch string // a fragment that should appear in the error response
 	}{
-		{"empty body", `{}`},
-		{"missing config_name", `{"persona_set":"hauntings"}`},
-		{"missing persona_set", `{"config_name":"chupacabra-network"}`},
-		{"both blank", `{"config_name":"  ","persona_set":""}`},
+		{"empty body", `{}`, "config_name or config is required"},
+		{"missing config", `{"persona_set":"hauntings"}`, "config_name or config is required"},
+		{"empty config_name + empty persona_set", `{"config_name":"  ","persona_set":""}`, "config_name or config is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,8 +51,8 @@ func TestCreateRun_RejectsMissingFields(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
 			}
-			if !strings.Contains(w.Body.String(), "config_name and persona_set are required") {
-				t.Errorf("body should mention missing fields, got %s", w.Body.String())
+			if !strings.Contains(w.Body.String(), tc.bodyMatch) {
+				t.Errorf("body: want substring %q, got %s", tc.bodyMatch, w.Body.String())
 			}
 		})
 	}
@@ -112,6 +112,92 @@ func TestCreateRun_RejectsEmptyPersonaCollection(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "no .yaml files") {
 		t.Errorf("body should mention empty collection, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsBothConfigForms(t *testing.T) {
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{PersonasDir: personasDir})
+
+	body := `{"config_name":"x","config":{"name":"inline","base_url":"http://x"},"persona_set":"okay"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "mutually exclusive") {
+		t.Errorf("body should mention mutually exclusive, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsBothPersonaForms(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","persona_set":"okay","personas":[{"name":"x"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "mutually exclusive") {
+		t.Errorf("body should mention mutually exclusive, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsEmptyInlinePersonasArray(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir})
+
+	body := `{"config_name":"lochness","personas":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "empty") {
+		t.Errorf("body should mention empty array, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsInlineConfigMissingRequiredFields(t *testing.T) {
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{PersonasDir: personasDir})
+
+	// Inline config missing required base_url — ParseAppConfig validate() rejects.
+	body := `{"config":{"name":"missing-base-url"},"persona_set":"okay"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "inline config invalid") || !strings.Contains(w.Body.String(), "base_url") {
+		t.Errorf("body should mention inline config + base_url, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsInlinePersonasNotArray(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir})
+
+	// Object instead of array.
+	body := `{"config_name":"lochness","personas":{"name":"not-an-array"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "JSON array") {
+		t.Errorf("body should mention JSON array, got %s", w.Body.String())
 	}
 }
 
@@ -347,6 +433,173 @@ func requireKind(t *testing.T, kinds []string, want string) {
 		}
 	}
 	t.Errorf("expected kind %q in stream, got %v", want, kinds)
+}
+
+func TestCreateRun_EndToEndSSEStream_InlineInputs(t *testing.T) {
+	// Same shape as TestCreateRun_EndToEndSSEStream but exercises the
+	// inline path: no files on disk, the panel sends config + personas
+	// in the request body.
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_yowie", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      provider.Usage{InputTokens: 50, OutputTokens: 12},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 60, OutputTokens: 8},
+			},
+		},
+	}
+
+	srv := mustNewServer(t, Config{
+		ProviderFactory: func() provider.Provider { return prov },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{
+		"config": {
+			"name": "Yowie Watch",
+			"base_url": "http://localhost:9999/graphql",
+			"auth": {
+				"type": "graphql",
+				"query": "mutation { login { token } }",
+				"token_path": "data.login.token"
+			},
+			"tools_from_schema": false,
+			"tools": []
+		},
+		"personas": [
+			{
+				"name": "Outback Watcher",
+				"description": "Bush-camping cryptozoologist hunting yowie tracks.",
+				"goals": ["Find a bloc to join"],
+				"behavior": "lurker"
+			}
+		]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, bodyBytes)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	events := parseSSEEvents(t, bodyBytes)
+	if len(events) < 5 {
+		t.Fatalf("expected at least 5 events, got %d", len(events))
+	}
+	if string(events[0].Event.Kind) != "run_start" {
+		t.Errorf("first event should be run_start, got %q", events[0].Event.Kind)
+	}
+	if string(events[len(events)-1].Event.Kind) != "run_end" {
+		t.Errorf("last event should be run_end, got %q", events[len(events)-1].Event.Kind)
+	}
+
+	// run_start payload should reflect the inline source.
+	startPayload, _ := events[0].Event.Payload.(map[string]any)
+	sources, _ := startPayload["sources"].(map[string]any)
+	if sources["config"] != "inline" || sources["personas"] != "inline" {
+		t.Errorf("run_start sources: want both inline, got %+v", sources)
+	}
+
+	// Per-agent events carry the inline persona's name.
+	sawAgentEvent := false
+	for _, ev := range events {
+		if ev.Persona == "Outback Watcher" {
+			sawAgentEvent = true
+			break
+		}
+	}
+	if !sawAgentEvent {
+		t.Errorf("expected per-agent events tagged with the inline persona's name")
+	}
+}
+
+func TestCreateRun_EndToEndSSEStream_MixedInlineAndNamed(t *testing.T) {
+	// Inline config + named persona set. Tests that the resolution
+	// helpers handle a mix without surprises.
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	mustWrite(t, filepath.Join(personasDir, "monsterhunters", "champ.yaml"), `name: Champ Spotter
+description: Lake Champlain regular.
+goals:
+  - Find a bloc to join
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Nothing to do."},
+				StopReason: "end",
+				Usage:      provider.Usage{InputTokens: 20, OutputTokens: 5},
+			},
+		},
+	}
+
+	srv := mustNewServer(t, Config{
+		PersonasDir:     personasDir,
+		ProviderFactory: func() provider.Provider { return prov },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{
+		"config": {
+			"name": "Inline Cryptid Network",
+			"base_url": "http://localhost:9999/graphql",
+			"auth": {"type":"graphql","query":"mutation { login { token } }","token_path":"data.login.token"},
+			"tools_from_schema": false,
+			"tools": []
+		},
+		"persona_set": "monsterhunters"
+	}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, bodyBytes)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	events := parseSSEEvents(t, bodyBytes)
+	startPayload, _ := events[0].Event.Payload.(map[string]any)
+	sources, _ := startPayload["sources"].(map[string]any)
+	if sources["config"] != "inline" || sources["personas"] != "name" {
+		t.Errorf("run_start sources: want config=inline + personas=name, got %+v", sources)
+	}
 }
 
 func TestRunRequest_MaxStepsClamping(t *testing.T) {

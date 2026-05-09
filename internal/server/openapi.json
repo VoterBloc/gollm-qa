@@ -99,7 +99,7 @@
             }
           },
           "400": {
-            "description": "Invalid body, unknown config_name, unknown persona_set, or empty collection.",
+            "description": "Invalid body; missing required pair (no config_name and no config, or no persona_set and no personas); both forms set for either pair (mutually exclusive); unknown config_name; unknown persona_set; empty inline personas array; inline config fails validation.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" }
@@ -181,15 +181,28 @@
       },
       "RunRequest": {
         "type": "object",
-        "required": ["config_name", "persona_set"],
+        "description": "Each input has two ways to arrive at the engine: by name (lookup against the engine's configured directories) or inline (parsed YAML content carried in the request). Validation requires exactly one of `config_name` / `config` and exactly one of `persona_set` / `personas`. Mixing is allowed (e.g. inline config + named persona set).",
         "properties": {
           "config_name": {
             "type": "string",
-            "description": "Stem of an entry under apps/ (no extension)."
+            "description": "Stem of an entry under apps/ (no extension). Mutually exclusive with `config`."
+          },
+          "config": {
+            "type": "object",
+            "description": "Inline app config — same shape as the YAML on disk. Mutually exclusive with `config_name`. The engine validates the same way (required: name, base_url; auth.query and auth.token_path required if auth.type is set; per-tool name and query when tools is non-empty).",
+            "additionalProperties": true
           },
           "persona_set": {
             "type": "string",
-            "description": "Name of a collection (subdirectory) under personas/."
+            "description": "Name of a collection (subdirectory) under personas/. Mutually exclusive with `personas`."
+          },
+          "personas": {
+            "type": "array",
+            "description": "Inline personas — array of objects, each in the same shape as a persona YAML on disk. Must be non-empty. Mutually exclusive with `persona_set`.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
           },
           "max_steps": {
             "type": "integer",

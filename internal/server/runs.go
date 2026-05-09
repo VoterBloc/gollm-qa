@@ -23,9 +23,20 @@ import (
 )
 
 // RunRequest is the JSON body shape for POST /v1/runs.
+//
+// Each input has two ways to arrive at the engine:
+//   - by name (CLI / panel-mirroring use case): ConfigName / PersonaSet
+//     lookups against the engine's configured directories.
+//   - inline (panel-with-its-own-DB use case): Config / Personas carry the
+//     parsed YAML content as JSON.
+//
+// Validation requires exactly one of each pair. Mixing is allowed (e.g.
+// inline config + named persona set) and useful in practice.
 type RunRequest struct {
-	ConfigName string `json:"config_name"`
-	PersonaSet string `json:"persona_set"`
+	ConfigName string          `json:"config_name,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
+	PersonaSet string          `json:"persona_set,omitempty"`
+	Personas   json.RawMessage `json:"personas,omitempty"`
 
 	// MaxSteps caps how many tool-call rounds each agent takes. Optional;
 	// nil/0 falls back to defaultMaxSteps. Capped at maxAllowedSteps as a
@@ -79,33 +90,19 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ConfigName = strings.TrimSpace(req.ConfigName)
 	req.PersonaSet = strings.TrimSpace(req.PersonaSet)
-	if req.ConfigName == "" || req.PersonaSet == "" {
-		writeError(w, http.StatusBadRequest, errors.New("config_name and persona_set are required"))
-		return
-	}
 
-	configPath, err := resolveYAMLByName(s.cfg.ConfigsDir, req.ConfigName)
+	appCfg, err := s.resolveConfig(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	personaDir, err := resolvePersonaCollection(s.cfg.PersonasDir, req.PersonaSet)
+	personas, err := s.resolvePersonas(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	appCfg, err := config.LoadAppConfig(configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("loading config: %w", err))
-		return
-	}
-	personas, err := config.LoadPersonas(personaDir)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("loading personas: %w", err))
 		return
 	}
 	if len(personas) == 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("persona collection %q has no personas", req.PersonaSet))
+		writeError(w, http.StatusBadRequest, errors.New("no personas to run"))
 		return
 	}
 
@@ -131,9 +128,13 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	defer stopKeepalive()
 
 	sse.write(RunEvent{Event: agent.Event{
-		Kind:    runEventStart,
-		At:      time.Now(),
-		Payload: map[string]any{"config": req.ConfigName, "persona_set": req.PersonaSet, "agents": len(personas)},
+		Kind: runEventStart,
+		At:   time.Now(),
+		Payload: map[string]any{
+			"config":  appCfg.Name,
+			"agents":  len(personas),
+			"sources": runSources(req),
+		},
 	}})
 
 	if appCfg.ToolsFromSchema {
@@ -307,6 +308,100 @@ func (s *sseWriter) writeRaw(text string) {
 	}
 	if err := s.rc.Flush(); err != nil {
 		s.logger.Error("flush SSE keepalive", "err", err)
+	}
+}
+
+// resolveConfig returns the *config.AppConfig for the run, sourced
+// either from inline JSON content or from a name lookup against the
+// configured ConfigsDir. Validation: exactly one of ConfigName / Config
+// must be set.
+func (s *Server) resolveConfig(req RunRequest) (*config.AppConfig, error) {
+	haveName := req.ConfigName != ""
+	haveInline := len(req.Config) > 0
+	if haveName && haveInline {
+		return nil, errors.New("config_name and config are mutually exclusive — set exactly one")
+	}
+	if !haveName && !haveInline {
+		return nil, errors.New("config_name or config is required")
+	}
+	if haveInline {
+		appCfg, err := config.ParseAppConfig(req.Config)
+		if err != nil {
+			return nil, fmt.Errorf("inline config invalid: %w", err)
+		}
+		return appCfg, nil
+	}
+	path, err := resolveYAMLByName(s.cfg.ConfigsDir, req.ConfigName)
+	if err != nil {
+		return nil, err
+	}
+	appCfg, err := config.LoadAppConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	return appCfg, nil
+}
+
+// resolvePersonas returns the personas for the run, sourced either from
+// inline JSON (an array of persona objects) or from a named collection
+// on disk. Validation: exactly one of PersonaSet / Personas must be set,
+// and the inline array (if used) must be non-empty.
+func (s *Server) resolvePersonas(req RunRequest) ([]*agent.Persona, error) {
+	haveName := req.PersonaSet != ""
+	haveInline := len(req.Personas) > 0
+	if haveName && haveInline {
+		return nil, errors.New("persona_set and personas are mutually exclusive — set exactly one")
+	}
+	if !haveName && !haveInline {
+		return nil, errors.New("persona_set or personas is required")
+	}
+	if haveInline {
+		var raws []json.RawMessage
+		if err := json.Unmarshal(req.Personas, &raws); err != nil {
+			return nil, fmt.Errorf("personas must be a JSON array: %w", err)
+		}
+		if len(raws) == 0 {
+			return nil, errors.New("personas array is empty")
+		}
+		out := make([]*agent.Persona, 0, len(raws))
+		for i, raw := range raws {
+			p, err := config.ParsePersona(raw)
+			if err != nil {
+				return nil, fmt.Errorf("personas[%d]: %w", i, err)
+			}
+			out = append(out, p)
+		}
+		return out, nil
+	}
+	dir, err := resolvePersonaCollection(s.cfg.PersonasDir, req.PersonaSet)
+	if err != nil {
+		return nil, err
+	}
+	personas, err := config.LoadPersonas(dir)
+	if err != nil {
+		return nil, fmt.Errorf("loading personas: %w", err)
+	}
+	return personas, nil
+}
+
+// runSources reports where each input came from for the run_start
+// event payload. Lets the panel show "this run was submitted with
+// inline config + named persona set" without needing to keep its own
+// derivation.
+func runSources(req RunRequest) map[string]string {
+	source := func(name, inline bool) string {
+		switch {
+		case inline:
+			return "inline"
+		case name:
+			return "name"
+		default:
+			return ""
+		}
+	}
+	return map[string]string{
+		"config":   source(req.ConfigName != "", len(req.Config) > 0),
+		"personas": source(req.PersonaSet != "", len(req.Personas) > 0),
 	}
 }
 
