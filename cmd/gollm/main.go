@@ -76,7 +76,7 @@ Usage:
   gollm seed --config <path> --campaign <path> --output <dir>
   gollm run --config <path> --personas <dir> [flags]
   gollm purge --config <path>
-  gollm serve [--addr :8080] [--apps apps] [--campaigns campaigns] [--personas personas]
+  gollm serve [--addr :8080] [--apps apps] [--campaigns campaigns] [--personas personas] [--clerk-issuer URL]
 
 Run "gollm <subcommand> -h" for subcommand-specific flags.
 `)
@@ -401,23 +401,30 @@ func serveCmd(args []string) error {
 		appsDir      string
 		campaignsDir string
 		personasDir  string
+		clerkIssuer  string
 	)
 	fs.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	fs.StringVar(&appsDir, "apps", "apps", "directory containing app configs (.yaml)")
 	fs.StringVar(&campaignsDir, "campaigns", "campaigns", "directory containing campaign briefs (.yaml)")
 	fs.StringVar(&personasDir, "personas", "personas", "directory containing persona files and collections")
+	fs.StringVar(&clerkIssuer, "clerk-issuer", os.Getenv("COHORT_CLERK_ISSUER"),
+		"Clerk issuer URL (e.g. https://your-app.clerk.accounts.dev). Empty = dev mode, no auth. Also reads from COHORT_CLERK_ISSUER.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	srv := server.New(server.Config{
+	srv, err := server.New(server.Config{
 		Addr:         addr,
 		ConfigsDir:   appsDir,
 		CampaignsDir: campaignsDir,
 		PersonasDir:  personasDir,
+		ClerkIssuer:  clerkIssuer,
 	}, logger)
+	if err != nil {
+		return fmt.Errorf("init server: %w", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

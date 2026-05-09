@@ -20,7 +20,7 @@ import (
 )
 
 func TestCreateRun_RejectsInvalidJSON(t *testing.T) {
-	srv := New(Config{}, nil)
+	srv := mustNewServer(t, Config{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader("not json {"))
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -33,7 +33,7 @@ func TestCreateRun_RejectsInvalidJSON(t *testing.T) {
 }
 
 func TestCreateRun_RejectsMissingFields(t *testing.T) {
-	srv := New(Config{}, nil)
+	srv := mustNewServer(t, Config{})
 	cases := []struct {
 		name string
 		body string
@@ -61,7 +61,7 @@ func TestCreateRun_RejectsMissingFields(t *testing.T) {
 func TestCreateRun_RejectsUnknownConfig(t *testing.T) {
 	configsDir := t.TempDir()
 	personasDir := makePersonaCollection(t, "okay-collection", []string{"phantom.yaml"})
-	srv := New(Config{ConfigsDir: configsDir, PersonasDir: personasDir}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
 
 	body := `{"config_name":"definitely-not-a-real-config","persona_set":"okay-collection"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
@@ -80,7 +80,7 @@ func TestCreateRun_RejectsUnknownPersonaSet(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "ghost-watch.yaml"), validAppConfigYAML())
 	personasDir := t.TempDir()
-	srv := New(Config{ConfigsDir: configsDir, PersonasDir: personasDir}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
 
 	body := `{"config_name":"ghost-watch","persona_set":"missing-coven"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
@@ -100,7 +100,7 @@ func TestCreateRun_RejectsEmptyPersonaCollection(t *testing.T) {
 	mustWrite(t, filepath.Join(configsDir, "ghost-watch.yaml"), validAppConfigYAML())
 	personasDir := t.TempDir()
 	mustMkdir(t, filepath.Join(personasDir, "abandoned-coven"))
-	srv := New(Config{ConfigsDir: configsDir, PersonasDir: personasDir}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
 
 	body := `{"config_name":"ghost-watch","persona_set":"abandoned-coven"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
@@ -120,7 +120,7 @@ func TestCreateRun_RejectsMalformedConfig(t *testing.T) {
 	// LoadAppConfig parses YAML; non-YAML should fail config-load with 400.
 	mustWrite(t, filepath.Join(configsDir, "broken.yaml"), "this is not: { valid yaml\n  ::\n")
 	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
-	srv := New(Config{ConfigsDir: configsDir, PersonasDir: personasDir}, nil)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
 
 	body := `{"config_name":"broken","persona_set":"okay"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewBufferString(body))
@@ -197,14 +197,14 @@ behavior: lurker
 		},
 	}
 
-	srv := New(Config{
+	srv := mustNewServer(t, Config{
 		ConfigsDir:      configsDir,
 		PersonasDir:     personasDir,
 		ProviderFactory: func() provider.Provider { return prov },
 		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
 			return newStubDriver()
 		},
-	}, nil)
+	})
 
 	// httptest.ResponseRecorder doesn't implement http.Flusher; spin up a
 	// real test server so the SSE handler can flush.
