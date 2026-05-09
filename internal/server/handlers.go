@@ -23,6 +23,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/configs", s.handleListConfigs)
 	mux.HandleFunc("GET /v1/campaigns", s.handleListCampaigns)
 	mux.HandleFunc("GET /v1/personas", s.handleListPersonas)
+	mux.HandleFunc("POST /v1/runs", s.handleCreateRun)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
