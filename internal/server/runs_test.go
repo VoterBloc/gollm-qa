@@ -19,8 +19,6 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
-func readAll(r io.Reader) ([]byte, error) { return io.ReadAll(r) }
-
 func TestCreateRun_RejectsInvalidJSON(t *testing.T) {
 	srv := New(Config{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader("not json {"))
@@ -166,14 +164,6 @@ tools: []
 `
 }
 
-// statusFromRecorder is a tiny convenience for tests that only care
-// about the status code.
-func statusFromRecorder(w *httptest.ResponseRecorder) int {
-	return w.Code
-}
-
-var _ = statusFromRecorder // keep helper exported for future tests
-
 func TestCreateRun_EndToEndSSEStream(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
@@ -229,14 +219,14 @@ behavior: lurker
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := readAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, bodyBytes)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("Content-Type: want text/event-stream, got %q", ct)
 	}
 
-	bodyBytes, err := readAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -357,4 +347,26 @@ func requireKind(t *testing.T, kinds []string, want string) {
 		}
 	}
 	t.Errorf("expected kind %q in stream, got %v", want, kinds)
+}
+
+func TestRunRequest_MaxStepsClamping(t *testing.T) {
+	cases := []struct {
+		name string
+		req  RunRequest
+		want int
+	}{
+		{"unset uses default", RunRequest{}, 50},
+		{"zero uses default", RunRequest{MaxSteps: 0}, 50},
+		{"negative uses default", RunRequest{MaxSteps: -7}, 50},
+		{"in-range passes through", RunRequest{MaxSteps: 75}, 75},
+		{"at ceiling passes through", RunRequest{MaxSteps: 200}, 200},
+		{"over ceiling clamps", RunRequest{MaxSteps: 9999}, 200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.req.maxSteps(); got != tc.want {
+				t.Errorf("maxSteps: want %d, got %d", tc.want, got)
+			}
+		})
+	}
 }

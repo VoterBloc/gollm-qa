@@ -125,12 +125,12 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Flush forwards to the wrapped writer when it supports flushing. SSE
-// handlers type-assert their writer to http.Flusher; without this
-// passthrough that assertion fails because we wrap the writer in
-// withRequestLogging.
-func (s *statusRecorder) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+// Unwrap exposes the underlying writer so http.NewResponseController
+// can walk the wrapper chain and reach a writer that actually supports
+// Flusher / Hijacker. SSE handlers use NewResponseController(w).Flush()
+// rather than a direct type assertion; without Unwrap, the controller
+// would stop at this wrapper and report ErrNotSupported even when the
+// real writer underneath flushes fine.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
