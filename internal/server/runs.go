@@ -15,8 +15,10 @@ import (
 
 	"github.com/VoterBloc/gollm-qa/internal/agent"
 	"github.com/VoterBloc/gollm-qa/internal/config"
+	"github.com/VoterBloc/gollm-qa/internal/driver"
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
 	"github.com/VoterBloc/gollm-qa/internal/introspect"
+	"github.com/VoterBloc/gollm-qa/internal/provider"
 	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
 )
 
@@ -140,6 +142,17 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 // each writing events to the shared SSE stream via the persona-tagged
 // callback. Returns when every agent has finished.
 func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, sse *sseWriter) {
+	provFn := s.cfg.ProviderFactory
+	if provFn == nil {
+		provFn = func() provider.Provider { return claude.New() }
+	}
+	drvFn := s.cfg.DriverFactory
+	if drvFn == nil {
+		drvFn = func(appCfg *config.AppConfig, logger *slog.Logger) driver.Driver {
+			return apidriver.New(appCfg, logger)
+		}
+	}
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)
 
@@ -155,8 +168,8 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			drv := apidriver.New(appCfg, s.logger)
-			llm := claude.New()
+			drv := drvFn(appCfg, s.logger)
+			llm := provFn()
 			cfg := agent.Config{
 				MaxSteps: 50,
 				OnEvent: func(ev agent.Event) {
