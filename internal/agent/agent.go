@@ -35,6 +35,25 @@ type Config struct {
 
 	// StepDelay is how long to wait between steps (pacing).
 	StepDelay time.Duration
+
+	// OnEvent, if non-nil, is called synchronously from inside Run as
+	// notable things happen (session start/end, each completed step, UX
+	// observations, errors). See events.go for the full taxonomy.
+	OnEvent EventCallback
+}
+
+// emit calls OnEvent if it's set. Stamping At inside this helper keeps
+// the call sites concise.
+func (a *Agent) emit(kind EventKind, step int, payload any) {
+	if a.config.OnEvent == nil {
+		return
+	}
+	a.config.OnEvent(Event{
+		Kind:    kind,
+		Step:    step,
+		At:      time.Now(),
+		Payload: payload,
+	})
 }
 
 // DefaultConfig returns sensible defaults.
@@ -75,6 +94,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		StartedAt: time.Now(),
 		Goals:     a.initGoals(),
 	}
+	a.emit(EventSessionStart, 0, nil)
 
 	authenticated := false
 
@@ -86,13 +106,16 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		if reg, ok := a.driver.(Registrar); ok {
 			a.logger.Info("registering")
 			if err := reg.Register(ctx, a.persona.RegisterInput); err != nil {
-				session.Errors = append(session.Errors, AgentError{
+				agentErr := AgentError{
 					Step:      0,
 					Timestamp: time.Now(),
 					Message:   fmt.Sprintf("registration failed: %v", err),
-				})
+				}
+				session.Errors = append(session.Errors, agentErr)
 				session.StopReason = "register_failed"
 				session.EndedAt = time.Now()
+				a.emit(EventError, 0, agentErr)
+				a.emit(EventSessionEnd, 0, session)
 				return session, nil
 			}
 			authenticated = true
@@ -103,13 +126,16 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 	if auth, ok := a.driver.(Authenticator); ok && a.persona.Credentials.Identifier != "" {
 		a.logger.Info("authenticating", "identifier", a.persona.Credentials.Identifier)
 		if err := auth.Login(ctx, a.persona.Credentials.Identifier, a.persona.Credentials.Password); err != nil {
-			session.Errors = append(session.Errors, AgentError{
+			agentErr := AgentError{
 				Step:      0,
 				Timestamp: time.Now(),
 				Message:   fmt.Sprintf("authentication failed: %v", err),
-			})
+			}
+			session.Errors = append(session.Errors, agentErr)
 			session.StopReason = "auth_failed"
 			session.EndedAt = time.Now()
+			a.emit(EventError, 0, agentErr)
+			a.emit(EventSessionEnd, 0, session)
 			return session, nil
 		}
 		authenticated = true
@@ -147,12 +173,14 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		resp, err := a.provider.Chat(ctx, messages, tools)
 		if err != nil {
-			session.Errors = append(session.Errors, AgentError{
+			agentErr := AgentError{
 				Step:      step,
 				Timestamp: time.Now(),
 				Message:   fmt.Sprintf("provider error: %v", err),
-			})
+			}
+			session.Errors = append(session.Errors, agentErr)
 			session.StopReason = "error"
+			a.emit(EventError, step, agentErr)
 			break
 		}
 
@@ -171,6 +199,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		// Execute each tool call and collect results.
 		var toolMessages []provider.Message
+		var stepActions []Action
 		for _, call := range resp.Message.ToolCalls {
 			a.logger.Info("executing tool", "step", step, "tool", call.Name)
 
@@ -188,14 +217,17 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 				Duration:  elapsed,
 			}
 			session.Actions = append(session.Actions, action)
+			stepActions = append(stepActions, action)
 
 			if execErr != nil {
-				session.Errors = append(session.Errors, AgentError{
+				agentErr := AgentError{
 					Step:      step,
 					Timestamp: time.Now(),
 					ToolName:  call.Name,
 					Message:   execErr.Error(),
-				})
+				}
+				session.Errors = append(session.Errors, agentErr)
+				a.emit(EventError, step, agentErr)
 			}
 
 			toolMessages = append(toolMessages, provider.Message{
@@ -205,6 +237,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			})
 		}
 		messages = append(messages, toolMessages...)
+		a.emit(EventStep, step, stepActions)
 
 		if resp.StopReason == "length" {
 			a.logger.Warn("context limit reached", "step", step)
@@ -226,6 +259,8 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		"stop_reason", session.StopReason,
 		"duration", session.EndedAt.Sub(session.StartedAt),
 	)
+
+	a.emit(EventSessionEnd, session.Steps, session)
 
 	return session, nil
 }
@@ -310,12 +345,14 @@ func (a *Agent) handleUXObservation(call provider.ToolCall, session *Session, st
 		args.Severity = "info"
 	}
 
-	session.UXNotes = append(session.UXNotes, UXNote{
+	note := UXNote{
 		Step:        step,
 		Timestamp:   time.Now(),
 		Observation: args.Observation,
 		Severity:    args.Severity,
-	})
+	}
+	session.UXNotes = append(session.UXNotes, note)
+	a.emit(EventObservation, step, note)
 
 	a.logger.Info("UX observation recorded", "severity", args.Severity, "observation", args.Observation)
 
