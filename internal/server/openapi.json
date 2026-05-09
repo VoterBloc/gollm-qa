@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "gollm-qa control plane",
-    "description": "HTTP API consumed by the Cohort panel (VoterBloc/cohort). Phase 1 covers read-only directory listing for app configs, campaign briefs, and personas. Run lifecycle, persistence, and SSE event streams arrive in later phases.",
+    "description": "HTTP API consumed by the Cohort panel (VoterBloc/cohort). Engine is stateless — it accepts run requests, executes synchronously, and streams events back as Server-Sent Events. The panel owns all persistence.",
     "version": "0.1.0"
   },
   "paths": {
@@ -67,6 +67,42 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/PersonaList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "post": {
+        "summary": "Execute a run synchronously, streaming events as SSE",
+        "description": "Validates inputs (4xx if config_name or persona_set don't resolve), then sets `Content-Type: text/event-stream` and streams events as the run executes. Each `data:` line is a JSON-encoded RunEvent. The connection lifetime is the run lifetime; the engine forgets the run when the response closes. The panel is expected to persist events as they arrive.\n\nEvent kinds (the `event.kind` field):\n- `run_start` (orchestrator) — payload: `{config, persona_set, agents}`\n- `session_start` (per agent) — payload: null\n- `step` (per agent) — payload: `Action[]` (actions taken during this step)\n- `observation` (per agent) — payload: `UXNote`\n- `error` (per agent) — payload: `AgentError`\n- `session_end` (per agent) — payload: full `Session`\n- `run_end` (orchestrator) — sent once at the end\n- `run_error` (orchestrator) — fatal run-level error (introspection failure, etc.)\n\nPer-agent events carry a non-empty `persona` field; orchestrator events leave it empty.",
+        "operationId": "createRun",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run accepted; events stream over SSE until completion.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events stream. Each `data:` line is a JSON-encoded RunEvent."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, unknown config_name, unknown persona_set, or empty collection.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
               }
             }
           }
@@ -141,6 +177,60 @@
         "required": ["error"],
         "properties": {
           "error": { "type": "string" }
+        }
+      },
+      "RunRequest": {
+        "type": "object",
+        "required": ["config_name", "persona_set"],
+        "properties": {
+          "config_name": {
+            "type": "string",
+            "description": "Stem of an entry under apps/ (no extension)."
+          },
+          "persona_set": {
+            "type": "string",
+            "description": "Name of a collection (subdirectory) under personas/."
+          },
+          "max_steps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50,
+            "description": "Per-agent cap on tool-call rounds. Optional; defaults to 50, hard ceiling 200."
+          }
+        }
+      },
+      "RunEvent": {
+        "type": "object",
+        "description": "One SSE event from POST /v1/runs. Each `data:` line in the response is a JSON-encoded value of this shape.",
+        "required": ["event"],
+        "properties": {
+          "persona": {
+            "type": "string",
+            "description": "Persona that emitted the event. Empty for run-level (orchestrator) events."
+          },
+          "event": {
+            "type": "object",
+            "required": ["kind", "at"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "run_start", "session_start", "step", "observation",
+                  "error", "session_end", "run_end", "run_error"
+                ]
+              },
+              "step": {
+                "type": "integer",
+                "description": "Set on per-agent events; the step within that agent's run."
+              },
+              "at": { "type": "string", "format": "date-time" },
+              "payload": {
+                "description": "Shape varies by kind. See the createRun operation description for details.",
+                "nullable": true
+              }
+            }
+          }
         }
       }
     }

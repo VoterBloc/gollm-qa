@@ -13,6 +13,10 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/VoterBloc/gollm-qa/internal/config"
+	"github.com/VoterBloc/gollm-qa/internal/driver"
+	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
 // Config controls server lifecycle and the file-system roots the read-only
@@ -23,6 +27,16 @@ type Config struct {
 	ConfigsDir   string // apps/
 	CampaignsDir string // campaigns/
 	PersonasDir  string // personas/
+
+	// ProviderFactory builds the LLM provider used by each agent in a
+	// run. Nil = default Claude provider (reads ANTHROPIC_API_KEY from
+	// env). Tests inject a stub here to avoid hitting the real API.
+	ProviderFactory func() provider.Provider
+
+	// DriverFactory builds the driver an agent uses to interact with
+	// the target application. Nil = default API driver. Tests inject a
+	// stub here to avoid hitting a real GraphQL endpoint.
+	DriverFactory func(*config.AppConfig, *slog.Logger) driver.Driver
 }
 
 // Server wraps an http.Server with the gollm-qa routes mounted.
@@ -109,4 +123,14 @@ type statusRecorder struct {
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap exposes the underlying writer so http.NewResponseController
+// can walk the wrapper chain and reach a writer that actually supports
+// Flusher / Hijacker. SSE handlers use NewResponseController(w).Flush()
+// rather than a direct type assertion; without Unwrap, the controller
+// would stop at this wrapper and report ErrNotSupported even when the
+// real writer underneath flushes fine.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
