@@ -1,0 +1,93 @@
+# Staging seed — joiner cohorts that organically populate the blocs created
+# by staging-leaders-2026-05.yaml.
+#
+# Joiners do NOT receive a list of bloc IDs. They use the platform's
+# browse/search tools (auto-discovered from the GraphQL schema) to find
+# blocs whose focus matches their interests, join, comment, and pledge.
+# This produces a more realistic distribution than direct assignment —
+# popular blocs naturally accrete more members.
+#
+# Run AFTER the leader pass has finished and blocs exist:
+#   gollm seed --config apps/voterbloc-staging.yaml \
+#              --campaign campaigns/staging-joiners-2026-05.yaml \
+#              --output personas/staging-joiners/
+#   gollm run  --config apps/voterbloc-staging.yaml \
+#              --personas personas/staging-joiners/
+
+brief_global: |
+  VoterBloc users in the 2026 election cycle. Members browse the feed and
+  bloc directory, find groups whose focus matches their lived experience or
+  interests, join one or two, comment on existing posts, and pledge to
+  campaigns they find compelling.
+
+  THESE PERSONAS ARE JOINERS, not leaders. Their goals should center on:
+    - Browse blocs and the feed, looking for content that resonates
+    - Join one (occasionally two) bloc(s) whose focus matches their interests
+    - Read existing posts and add a thoughtful comment or two
+    - Pledge to a campaign IF (and only if) one feels personally relevant
+  Do NOT include "create a bloc" or "create a campaign" goals. Behavior
+  field should vary across the cohort (engaged / moderate / lurker).
+
+cohorts:
+  - name: ca-suburban-moderate-parents
+    count: 25
+    brief: |
+      California suburban parents in their 40s and 50s — Walnut Creek, Irvine,
+      Pleasanton, Roseville, Carlsbad, Encinitas. Two-income households,
+      kids in public schools. Politically moderate, register reliably but
+      don't see themselves as activists. Light-to-moderate platform users:
+      they read more than they post. Concerns include school funding, local
+      taxes, traffic, housing affordability for their adult kids.
+      Mostly behavior: lurker or moderate.
+
+  - name: ca-urban-engaged-25-40
+    count: 30
+    brief: |
+      Engaged California urban professionals 25 to 40 — split across SF,
+      Oakland, LA (Echo Park, Highland Park, K-town), San Diego (North Park,
+      South Park), Long Beach, Sacramento midtown. Knowledge workers, healthcare,
+      nonprofit, education. Politically active, comment frequently, will
+      pledge. Mix of housing, climate, transit, labor, immigration, and
+      criminal-justice interests. Mostly behavior: engaged, some moderate.
+
+  - name: central-valley-and-inland-empire-skeptics
+    count: 15
+    brief: |
+      California Central Valley and Inland Empire residents 45-65 —
+      Bakersfield, Visalia, Modesto, Fontana, Riverside, Hesperia. Mix of
+      working-class and small-business; ag, trucking, healthcare, retail.
+      Politically skeptical of online platforms, often skeptical of big-coastal-city
+      framings. Pulled onto VoterBloc by a specific local issue (water,
+      warehousing, a school board fight). Will lurk and read more than post,
+      but comment sharply when something hits home. Behavior: lurker or moderate.
+
+  - name: ca-first-time-voters-college
+    count: 20
+    brief: |
+      California college-age (18-22) first-time or second-time voters —
+      UC Berkeley, UCLA, UC Davis, UCSD, SF State, CSU Long Beach, Fresno
+      State. Mix of urban and Central Valley backgrounds. Politically active
+      online, varied issue priorities (climate, housing, student debt,
+      immigration, abortion, Israel/Palestine). Will join blocs that feel
+      authentic, allergic to anything that reads as astroturf. Behavior:
+      mostly engaged, some moderate.
+
+  - name: swing-state-engaged-30-55
+    count: 20
+    brief: |
+      Politically engaged 30-55 in MI (Detroit metro, Grand Rapids, Lansing),
+      OH (Cleveland, Columbus, Cincinnati, Toledo), PA (Pittsburgh,
+      Philadelphia, Lehigh Valley), and TX (Austin, Houston, San Antonio).
+      Comfortable online, will comment and pledge. Issue focus tracks local:
+      auto/EV/labor in MI, vacancy/lead/healthcare in OH/PA, grid/climate/housing
+      in TX. Behavior: mostly engaged, some moderate.
+
+  - name: national-low-engagement-lurkers
+    count: 10
+    brief: |
+      Low-engagement adult users distributed across MI, OH, PA, GA, NC, AZ,
+      NV, WI. 35-65, register out of curiosity or because a friend invited
+      them. Will browse and occasionally read posts but rarely comment and
+      almost never pledge. Their value to the platform demo is *being there*
+      — making member counts feel realistic without inflating engagement
+      stats artificially. Behavior: lurker.
