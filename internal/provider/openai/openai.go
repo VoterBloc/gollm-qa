@@ -173,13 +173,16 @@ func toSDKTools(tools []provider.Tool) []oai.ChatCompletionToolParam {
 	}
 	out := make([]oai.ChatCompletionToolParam, len(tools))
 	for i, t := range tools {
+		fn := shared.FunctionDefinitionParam{
+			Name:       t.Name,
+			Parameters: shared.FunctionParameters(t.Parameters),
+		}
+		if t.Description != "" {
+			fn.Description = param.NewOpt(t.Description)
+		}
 		out[i] = oai.ChatCompletionToolParam{
-			Type: constant.Function(""), // marshals as "function"
-			Function: shared.FunctionDefinitionParam{
-				Name:        t.Name,
-				Description: param.NewOpt(t.Description),
-				Parameters:  shared.FunctionParameters(t.Parameters),
-			},
+			Type:     constant.Function(""), // marshals as "function"
+			Function: fn,
 		}
 	}
 	return out

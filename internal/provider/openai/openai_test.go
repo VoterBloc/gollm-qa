@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/option"
@@ -133,7 +134,7 @@ func TestToSDKMessages_AssistantWithEmptyArgsBecomesEmptyObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(string(raw), `"arguments":"{}"`) {
+	if !strings.Contains(string(raw), `"arguments":"{}"`) {
 		t.Errorf("expected empty arguments coerced to '{}', raw=%s", raw)
 	}
 }
@@ -329,14 +330,3 @@ func TestChat_TextOnlyResponse(t *testing.T) {
 	}
 }
 
-// contains is a small helper for the empty-args coercion test —
-// strings.Contains would also do, but keeping the test-local helper
-// trims an import for one use.
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
