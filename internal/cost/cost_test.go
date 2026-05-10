@@ -219,6 +219,7 @@ func TestDefaults_HasExpectedModels(t *testing.T) {
 		"openai:gpt-4o-mini",
 		"gemini:2.5-pro",
 		"gemini:2.5-flash",
+		"local:llama3.1",
 	}
 	for _, id := range mustBePriced {
 		if !tbl.Has(id) {

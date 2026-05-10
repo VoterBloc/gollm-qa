@@ -25,6 +25,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // registers "claude" provider
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/gemini" // registers "gemini" provider
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/local"  // registers "local" provider (Ollama / OpenAI-compatible)
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // registers "openai" provider
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
 	"github.com/VoterBloc/gollm-qa/internal/server"
