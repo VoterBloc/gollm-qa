@@ -81,6 +81,51 @@ func TestLoadAppConfig(t *testing.T) {
 	}
 }
 
+func TestLoadAppConfig_DefaultModel(t *testing.T) {
+	yaml := `
+name: Cryptid Watch
+base_url: https://api.cryptidwatch.example/graphql
+auth:
+  type: graphql
+  query: |
+    mutation { login { token } }
+  token_path: data.login.token
+default_model: openai:gpt-4o-mini
+tools: []
+`
+	path := writeTempFile(t, "withmodel.yaml", yaml)
+
+	cfg, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+	if cfg.DefaultModel != "openai:gpt-4o-mini" {
+		t.Errorf("DefaultModel = %q, want %q", cfg.DefaultModel, "openai:gpt-4o-mini")
+	}
+}
+
+func TestLoadAppConfig_DefaultModelOmitted(t *testing.T) {
+	// Absent is fine — most apps don't pin a model.
+	yaml := `
+name: Bigfoot Appreciation Society
+base_url: https://api.squatch.example/graphql
+auth:
+  type: graphql
+  query: "mutation { login { token } }"
+  token_path: data.login.token
+tools: []
+`
+	path := writeTempFile(t, "nomodel.yaml", yaml)
+
+	cfg, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+	if cfg.DefaultModel != "" {
+		t.Errorf("DefaultModel should be empty when omitted, got %q", cfg.DefaultModel)
+	}
+}
+
 func TestLoadAppConfig_RegisterFields(t *testing.T) {
 	yaml := `
 name: Bigfoot Appreciation Society

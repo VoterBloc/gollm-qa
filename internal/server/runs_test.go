@@ -272,6 +272,164 @@ tools: []
 `
 }
 
+func TestCreateRun_RejectsUnknownModelSpec(t *testing.T) {
+	// An unknown <provider> prefix should land as a clean 400 before
+	// the SSE stream opens — clients shouldn't get a long-poll
+	// connection only to read a mid-stream run_error.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","persona_set":"okay","model":"definitely-not-real:gpt-9000"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "definitely-not-real:gpt-9000") {
+		t.Errorf("body should name the bad spec, got %s", w.Body.String())
+	}
+	// And it should hint at what's actually registered, so the client
+	// can correct without round-tripping through docs.
+	if !strings.Contains(w.Body.String(), "registered:") {
+		t.Errorf("body should list registered prefixes, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RequestModelOverridesAppConfigDefault(t *testing.T) {
+	configsDir := t.TempDir()
+	// App config sets a default_model that the request body should override.
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML()+"default_model: claude:sonnet-4-5\n")
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	mustWrite(t, filepath.Join(personasDir, "monsterhunters", "ghost-hunter.yaml"), `name: Ghost Hunter
+description: Investigates haunted forums.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Bigfoot was here."}, StopReason: "end"},
+		},
+	}
+	factory, seen := recordingFactory(prov)
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: factory,
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"monsterhunters","model":"openai:gpt-4o"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body) // drain SSE
+
+	if seen() != "openai:gpt-4o" {
+		t.Errorf("factory got spec %q, want %q (request body should win over app-config default)", seen(), "openai:gpt-4o")
+	}
+}
+
+func TestCreateRun_AppConfigDefaultModelUsedWhenRequestOmits(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML()+"default_model: openai:gpt-4o-mini\n")
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	mustWrite(t, filepath.Join(personasDir, "monsterhunters", "yeti-tracker.yaml"), `name: Yeti Tracker
+description: Looks for big footprints.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Done."}, StopReason: "end"},
+		},
+	}
+	factory, seen := recordingFactory(prov)
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: factory,
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// No "model" field in the body — should fall back to app config's default_model.
+	body := `{"config_name":"lochness","persona_set":"monsterhunters"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if seen() != "openai:gpt-4o-mini" {
+		t.Errorf("factory got spec %q, want %q (app-config default_model should apply when request omits model)", seen(), "openai:gpt-4o-mini")
+	}
+}
+
+func TestCreateRun_BuiltinDefaultUsedWhenNothingSet(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	mustWrite(t, filepath.Join(personasDir, "monsterhunters", "moth-watcher.yaml"), `name: Moth Watcher
+description: Awaits Mothman.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Mothman not seen."}, StopReason: "end"},
+		},
+	}
+	factory, seen := recordingFactory(prov)
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: factory,
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"monsterhunters"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if seen() != provider.DefaultModelSpec {
+		t.Errorf("factory got spec %q, want %q (built-in default should apply when no other source is set)", seen(), provider.DefaultModelSpec)
+	}
+}
+
 func TestCreateRun_EndToEndSSEStream(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
@@ -308,7 +466,7 @@ behavior: lurker
 	srv := mustNewServer(t, Config{
 		ConfigsDir:      configsDir,
 		PersonasDir:     personasDir,
-		ProviderFactory: func() provider.Provider { return prov },
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
 		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
 			return newStubDriver()
 		},
@@ -373,6 +531,33 @@ behavior: lurker
 			}
 		}
 	}
+}
+
+// recordingFactory wraps a stubProvider and remembers the spec it was
+// built for. Lets tests assert which spec the resolution code passed
+// through without coupling to the provider package's wire shape.
+//
+// The factory closure is invoked from the HTTP handler goroutine; the
+// returned reader is called from the test goroutine after the response
+// closes. The mutex makes that handoff explicit so a future refactor
+// that splits the read/write boundary doesn't introduce a silent race.
+func recordingFactory(prov provider.Provider) (func(spec string) (provider.Provider, error), func() string) {
+	var (
+		mu   sync.Mutex
+		seen string
+	)
+	factory := func(spec string) (provider.Provider, error) {
+		mu.Lock()
+		seen = spec
+		mu.Unlock()
+		return prov, nil
+	}
+	read := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen
+	}
+	return factory, read
 }
 
 // stubProvider returns canned responses in sequence; mirrors the pattern
@@ -482,7 +667,7 @@ func TestCreateRun_EndToEndSSEStream_InlineInputs(t *testing.T) {
 	}
 
 	srv := mustNewServer(t, Config{
-		ProviderFactory: func() provider.Provider { return prov },
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
 		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
 			return newStubDriver()
 		},
@@ -583,7 +768,7 @@ behavior: lurker
 
 	srv := mustNewServer(t, Config{
 		PersonasDir:     personasDir,
-		ProviderFactory: func() provider.Provider { return prov },
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
 		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
 			return newStubDriver()
 		},
@@ -643,7 +828,7 @@ func TestCreateRun_EndToEndSSEStream_NamedConfigInlinePersonas(t *testing.T) {
 
 	srv := mustNewServer(t, Config{
 		ConfigsDir:      configsDir,
-		ProviderFactory: func() provider.Provider { return prov },
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
 		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
 			return newStubDriver()
 		},

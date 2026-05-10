@@ -99,7 +99,7 @@
             }
           },
           "400": {
-            "description": "Invalid body; missing required pair (no config_name and no config, or no persona_set and no personas); both forms set for either pair (mutually exclusive); unknown config_name; unknown persona_set; empty inline personas array; inline config fails validation.",
+            "description": "Invalid body; missing required pair (no config_name and no config, or no persona_set and no personas); both forms set for either pair (mutually exclusive); unknown config_name; unknown persona_set; empty inline personas array; inline config fails validation; unknown model spec (the response body lists the registered provider prefixes).",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" }
@@ -189,7 +189,7 @@
           },
           "config": {
             "type": "object",
-            "description": "Inline app config — same shape as the YAML on disk. Mutually exclusive with `config_name`. **Keys are snake_case** (e.g. `base_url`, `tools_from_schema`) because the underlying struct uses YAML tags and `yaml.Unmarshal` is what parses the inline JSON. The engine validates the same way as on-disk loads (required: `name`, `base_url`; `auth.query` and `auth.token_path` required if `auth.type` is set; per-tool `name` and `query` when `tools` is non-empty).",
+            "description": "Inline app config — same shape as the YAML on disk. Mutually exclusive with `config_name`. **Keys are snake_case** (e.g. `base_url`, `tools_from_schema`, `default_model`) because the underlying struct uses YAML tags and `yaml.Unmarshal` is what parses the inline JSON. The engine validates the same way as on-disk loads (required: `name`, `base_url`; `auth.query` and `auth.token_path` required if `auth.type` is set; per-tool `name` and `query` when `tools` is non-empty). `default_model` is optional and overrideable per request via the top-level `model` field.",
             "additionalProperties": true
           },
           "persona_set": {
@@ -210,6 +210,11 @@
             "maximum": 200,
             "default": 50,
             "description": "Per-agent cap on tool-call rounds. Optional; defaults to 50, hard ceiling 200."
+          },
+          "model": {
+            "type": "string",
+            "description": "`<provider>:<model>` spec selecting which LLM drives this run. Optional; falls back to the inline/named config's `default_model`, then to the engine's built-in default. Unknown prefix → 400 with the registered providers listed.",
+            "example": "openai:gpt-4o"
           }
         }
       },

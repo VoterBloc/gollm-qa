@@ -34,10 +34,12 @@ type Config struct {
 	// /health and /openapi.json stay public regardless.
 	ClerkIssuer string
 
-	// ProviderFactory builds the LLM provider used by each agent in a
-	// run. Nil = default Claude provider (reads ANTHROPIC_API_KEY from
-	// env). Tests inject a stub here to avoid hitting the real API.
-	ProviderFactory func() provider.Provider
+	// ProviderFactory builds the LLM provider for a run from a resolved
+	// "<provider>:<model>" spec. Nil = provider.New (reads the relevant
+	// API key from env). Tests inject a stub here that ignores the spec
+	// arg and returns a canned provider — that's deliberate, the spec
+	// flows through to live SDKs only via the default path.
+	ProviderFactory func(spec string) (provider.Provider, error)
 
 	// DriverFactory builds the driver an agent uses to interact with
 	// the target application. Nil = default API driver. Tests inject a
