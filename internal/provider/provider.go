@@ -51,10 +51,14 @@ type Response struct {
 	Usage      Usage   `json:"usage"`
 }
 
-// Usage tracks token consumption for a single request.
+// Usage tracks token consumption for a single request. ModelID is the
+// "<provider>:<model>" spec the request was issued against — cost code
+// keys pricing lookups off it so per-call accounting doesn't have to
+// thread the model through separately.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	ModelID      string `json:"model_id,omitempty"`
 }
 
 // Provider is the interface that LLM backends implement.

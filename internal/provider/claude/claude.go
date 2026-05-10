@@ -12,17 +12,51 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
+// providerPrefix is the registry key this package registers under. Lives
+// in one place so the prefix used in Usage.ModelID can't drift from the
+// prefix used to look the provider up.
+const providerPrefix = "claude"
+
+// DefaultModel is the SDK model used when WithModel isn't supplied to New.
+// Pulled out of the constructor body so the default is named and visible
+// to direct callers; the registry path always specifies a model.
+var DefaultModel = anthropic.ModelClaudeSonnet4_5_20250929
+
+// modelAliases maps short, human-friendly model names to fully-qualified
+// SDK model identifiers. Names not in the map fall through to the SDK
+// verbatim — anthropic.Model is a typed string, so any well-formed ID
+// works; the SDK rejects bogus ones at request time.
+var modelAliases = map[string]anthropic.Model{
+	"sonnet-4-5": anthropic.ModelClaudeSonnet4_5_20250929,
+}
+
+// defaultModelAlias is the spec suffix that resolves to DefaultModel.
+// Kept so direct callers of New populate Usage.ModelID with the same
+// spec a registry-constructed provider would use.
+const defaultModelAlias = "sonnet-4-5"
+
+// init registers the Claude provider so callers of provider.New("claude:...")
+// get one. Anywhere using the registry must import this package directly
+// or via blank import to fire this init.
+func init() {
+	provider.Register(providerPrefix, func(model string) (provider.Provider, error) {
+		return NewFromSpec(model)
+	})
+}
+
 // Claude implements provider.Provider using the Anthropic Messages API.
 type Claude struct {
 	client    *anthropic.Client
 	model     anthropic.Model
+	modelSpec string // "<prefix>:<alias>" — populates Usage.ModelID
 	maxTokens int64
 }
 
 // Option configures a Claude provider.
 type Option func(*Claude)
 
-// WithModel sets the model to use. Defaults to Claude Sonnet.
+// WithModel sets the SDK model to use. Use NewFromSpec instead when you
+// have a "claude:<alias>" spec — that path also populates Usage.ModelID.
 func WithModel(model anthropic.Model) Option {
 	return func(c *Claude) {
 		c.model = model
@@ -54,13 +88,43 @@ func New(opts ...any) *Claude {
 	client := anthropic.NewClient(reqOpts...)
 	c := &Claude{
 		client:    &client,
-		model:     anthropic.ModelClaudeSonnet4_5_20250929,
+		model:     DefaultModel,
+		modelSpec: providerPrefix + ":" + defaultModelAlias,
 		maxTokens: 4096,
 	}
 	for _, o := range clOpts {
 		o(c)
 	}
 	return c
+}
+
+// NewFromSpec creates a Claude provider for the given model alias (the
+// suffix of a "claude:<alias>" spec). Unknown aliases pass through to the
+// SDK verbatim — anthropic.Model is a typed string, so any well-formed
+// model ID works and the SDK rejects bogus ones on first request.
+func NewFromSpec(modelName string, opts ...option.RequestOption) (*Claude, error) {
+	if modelName == "" {
+		return nil, fmt.Errorf("claude: empty model name")
+	}
+	c := New(toAnyOpts(opts)...)
+	c.model = resolveModel(modelName)
+	c.modelSpec = providerPrefix + ":" + modelName
+	return c, nil
+}
+
+func resolveModel(name string) anthropic.Model {
+	if m, ok := modelAliases[name]; ok {
+		return m
+	}
+	return anthropic.Model(name)
+}
+
+func toAnyOpts(reqOpts []option.RequestOption) []any {
+	out := make([]any, len(reqOpts))
+	for i, o := range reqOpts {
+		out[i] = o
+	}
+	return out
 }
 
 // Chat sends a conversation with tools to Claude and returns the response.
@@ -85,7 +149,9 @@ func (c *Claude) Chat(ctx context.Context, messages []provider.Message, tools []
 		return nil, fmt.Errorf("claude chat: %w", err)
 	}
 
-	return fromSDKResponse(resp), nil
+	out := fromSDKResponse(resp)
+	out.Usage.ModelID = c.modelSpec
+	return out, nil
 }
 
 // toSDKMessages converts our messages to Anthropic SDK format.
