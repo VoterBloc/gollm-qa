@@ -228,6 +228,77 @@ func TestChat_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestNewFromSpec_ResolvesAlias(t *testing.T) {
+	c, err := NewFromSpec("sonnet-4-5", option.WithAPIKey("sk-fake-bigfoot-key"))
+	if err != nil {
+		t.Fatalf("NewFromSpec: %v", err)
+	}
+	if c.model != anthropic.ModelClaudeSonnet4_5_20250929 {
+		t.Errorf("expected sonnet-4-5 alias to resolve to ModelClaudeSonnet4_5_20250929, got %q", c.model)
+	}
+	if c.modelSpec != "claude:sonnet-4-5" {
+		t.Errorf("expected modelSpec %q, got %q", "claude:sonnet-4-5", c.modelSpec)
+	}
+}
+
+func TestNewFromSpec_PassesUnknownThrough(t *testing.T) {
+	// Unknown aliases are not an error — they pass to the SDK verbatim,
+	// which lets new model IDs work without a code change.
+	c, err := NewFromSpec("claude-experimental-pancake-flipper-v9", option.WithAPIKey("sk-fake-key"))
+	if err != nil {
+		t.Fatalf("NewFromSpec: %v", err)
+	}
+	if string(c.model) != "claude-experimental-pancake-flipper-v9" {
+		t.Errorf("expected unknown name to pass through, got %q", c.model)
+	}
+}
+
+func TestNewFromSpec_RejectsEmpty(t *testing.T) {
+	if _, err := NewFromSpec(""); err == nil {
+		t.Fatal("expected error for empty model name")
+	}
+}
+
+func TestChat_PopulatesModelIDOnUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":    "msg_pancakes",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": []map[string]any{
+				{"type": "text", "text": "OK."},
+			},
+			"stop_reason": "end_turn",
+			"usage": map[string]any{
+				"input_tokens":  5,
+				"output_tokens": 1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	c, err := NewFromSpec("sonnet-4-5",
+		option.WithBaseURL(server.URL),
+		option.WithAPIKey("sk-fake-bigfoot-key"),
+	)
+	if err != nil {
+		t.Fatalf("NewFromSpec: %v", err)
+	}
+
+	out, err := c.Chat(context.Background(), []provider.Message{
+		{Role: provider.RoleUser, Content: "ack"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if out.Usage.ModelID != "claude:sonnet-4-5" {
+		t.Errorf("expected Usage.ModelID = %q, got %q", "claude:sonnet-4-5", out.Usage.ModelID)
+	}
+}
+
 func TestChat_TextOnlyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{

@@ -21,7 +21,8 @@ import (
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
 	"github.com/VoterBloc/gollm-qa/internal/introspect"
 	"github.com/VoterBloc/gollm-qa/internal/persona"
-	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
+	"github.com/VoterBloc/gollm-qa/internal/provider"
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // registers "claude" provider
 	"github.com/VoterBloc/gollm-qa/internal/reporter"
 	"github.com/VoterBloc/gollm-qa/internal/server"
 )
@@ -168,10 +169,11 @@ func runCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "\nStarting %d agents against %s (concurrency: %d, max steps: %d)\n\n",
 		len(personas), appCfg.Name, concurrency, maxSteps)
 
+	llm := provider.MustNew(provider.DefaultModelSpec)
+
 	for _, p := range personas {
 		g.Go(func() error {
 			drv := apidriver.New(appCfg, logger)
-			llm := claude.New()
 			a := agent.New(p, llm, drv, agentCfg, logger)
 
 			session, err := a.Run(ctx)
@@ -351,7 +353,7 @@ func seedCmd(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	gen := persona.NewGenerator(claude.New())
+	gen := persona.NewGenerator(provider.MustNew(provider.DefaultModelSpec))
 	seen := persona.NewSeenIdentities()
 
 	fmt.Fprintf(os.Stderr, "\nSeeding %d personas across %d cohorts for %s\n",

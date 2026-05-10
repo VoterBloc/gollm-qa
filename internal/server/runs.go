@@ -20,7 +20,7 @@ import (
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
 	"github.com/VoterBloc/gollm-qa/internal/introspect"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
-	"github.com/VoterBloc/gollm-qa/internal/provider/claude"
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // registers "claude" provider
 )
 
 // jsonNull matches JSON's null literal — `json.RawMessage` retains the
@@ -190,7 +190,7 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, sse *sseWriter) {
 	provFn := s.cfg.ProviderFactory
 	if provFn == nil {
-		provFn = func() provider.Provider { return claude.New() }
+		provFn = func() provider.Provider { return provider.MustNew(provider.DefaultModelSpec) }
 	}
 	drvFn := s.cfg.DriverFactory
 	if drvFn == nil {
@@ -198,6 +198,11 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			return apidriver.New(appCfg, logger)
 		}
 	}
+
+	// One provider instance shared across agents — Anthropic SDK clients
+	// are concurrency-safe, and tests inject providers (stubProvider in
+	// runs_test.go) that are also safe for concurrent Chat calls.
+	llm := provFn()
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)
@@ -215,7 +220,6 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			defer func() { <-sem }()
 
 			drv := drvFn(appCfg, s.logger)
-			llm := provFn()
 			cfg := agent.Config{
 				MaxSteps: maxSteps,
 				OnEvent: func(ev agent.Event) {

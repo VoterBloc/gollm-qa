@@ -12,55 +12,86 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
+// providerPrefix is the registry key this package registers under. Lives
+// in one place so the prefix used in Usage.ModelID can't drift from the
+// prefix used to look the provider up.
+const providerPrefix = "claude"
+
+// DefaultModel is the SDK model used when New is called without going
+// through NewFromSpec. Pulled out of the constructor body so the default
+// is named and visible to direct callers; the registry path always
+// specifies a model.
+var DefaultModel = anthropic.ModelClaudeSonnet4_5_20250929
+
+// modelAliases maps short, human-friendly model names to fully-qualified
+// SDK model identifiers. Names not in the map fall through to the SDK
+// verbatim — anthropic.Model is a typed string, so any well-formed ID
+// works; the SDK rejects bogus ones at request time.
+var modelAliases = map[string]anthropic.Model{
+	"sonnet-4-5": anthropic.ModelClaudeSonnet4_5_20250929,
+}
+
+// defaultModelAlias is the spec suffix that resolves to DefaultModel.
+// Kept so direct callers of New populate Usage.ModelID with the same
+// spec a registry-constructed provider would use.
+const defaultModelAlias = "sonnet-4-5"
+
+// init registers the Claude provider so callers of provider.New("claude:...")
+// get one. Anywhere using the registry must import this package directly
+// or via blank import to fire this init.
+func init() {
+	provider.Register(providerPrefix, func(model string) (provider.Provider, error) {
+		return NewFromSpec(model)
+	})
+}
+
+// defaultMaxTokens is the per-response output cap. Hardcoded — no caller
+// has needed an override; a future tuning knob can re-introduce the option.
+const defaultMaxTokens = 4096
+
 // Claude implements provider.Provider using the Anthropic Messages API.
 type Claude struct {
 	client    *anthropic.Client
 	model     anthropic.Model
+	modelSpec string // "<prefix>:<alias>" — populates Usage.ModelID
 	maxTokens int64
 }
 
-// Option configures a Claude provider.
-type Option func(*Claude)
-
-// WithModel sets the model to use. Defaults to Claude Sonnet.
-func WithModel(model anthropic.Model) Option {
-	return func(c *Claude) {
-		c.model = model
-	}
-}
-
-// WithMaxTokens sets the maximum tokens per response. Defaults to 4096.
-func WithMaxTokens(n int64) Option {
-	return func(c *Claude) {
-		c.maxTokens = n
-	}
-}
-
-// New creates a Claude provider. By default it reads ANTHROPIC_API_KEY from
-// the environment. Pass option.WithAPIKey to override.
-func New(opts ...any) *Claude {
-	var reqOpts []option.RequestOption
-	var clOpts []Option
-
-	for _, o := range opts {
-		switch v := o.(type) {
-		case option.RequestOption:
-			reqOpts = append(reqOpts, v)
-		case Option:
-			clOpts = append(clOpts, v)
-		}
-	}
-
-	client := anthropic.NewClient(reqOpts...)
-	c := &Claude{
+// New creates a Claude provider on the default model. Reads ANTHROPIC_API_KEY
+// from the environment by default; pass option.WithAPIKey or option.WithBaseURL
+// to override. Use NewFromSpec when you need a non-default model — that path
+// keeps modelSpec aligned with the actual model so Usage.ModelID stays
+// truthful. Selecting a model via direct-mutation here is intentionally not
+// supported.
+func New(opts ...option.RequestOption) *Claude {
+	client := anthropic.NewClient(opts...)
+	return &Claude{
 		client:    &client,
-		model:     anthropic.ModelClaudeSonnet4_5_20250929,
-		maxTokens: 4096,
+		model:     DefaultModel,
+		modelSpec: providerPrefix + ":" + defaultModelAlias,
+		maxTokens: defaultMaxTokens,
 	}
-	for _, o := range clOpts {
-		o(c)
+}
+
+// NewFromSpec creates a Claude provider for the given model alias (the
+// suffix of a "claude:<alias>" spec). Unknown aliases pass through to the
+// SDK verbatim — anthropic.Model is a typed string, so any well-formed
+// model ID works and the SDK rejects bogus ones on first request.
+func NewFromSpec(modelName string, opts ...option.RequestOption) (*Claude, error) {
+	if modelName == "" {
+		return nil, fmt.Errorf("claude: empty model name")
 	}
-	return c
+	c := New(opts...)
+	c.model = resolveModel(modelName)
+	c.modelSpec = providerPrefix + ":" + modelName
+	return c, nil
+}
+
+func resolveModel(name string) anthropic.Model {
+	if m, ok := modelAliases[name]; ok {
+		return m
+	}
+	return anthropic.Model(name)
 }
 
 // Chat sends a conversation with tools to Claude and returns the response.
@@ -85,7 +116,9 @@ func (c *Claude) Chat(ctx context.Context, messages []provider.Message, tools []
 		return nil, fmt.Errorf("claude chat: %w", err)
 	}
 
-	return fromSDKResponse(resp), nil
+	out := fromSDKResponse(resp)
+	out.Usage.ModelID = c.modelSpec
+	return out, nil
 }
 
 // toSDKMessages converts our messages to Anthropic SDK format.
