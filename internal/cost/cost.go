@@ -42,7 +42,9 @@ type Table struct {
 
 	// warnedUnknown deduplicates "unknown model" log lines across
 	// concurrent agents — the issue calls for "logs once" per id.
-	warnedUnknown sync.Map // map[string]struct{}
+	// Pointer so WithLogger can share state with the original Table
+	// without value-copying a sync.Map (which is unsafe after first use).
+	warnedUnknown *sync.Map // map[string]struct{}
 
 	logger *slog.Logger
 }
@@ -74,6 +76,13 @@ func Load(path string) (*Table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing pricing file %s: %w", path, err)
 	}
+	// A non-empty file that yields zero prices is almost certainly a
+	// shape mistake (top-level "providers:" missing, indentation off,
+	// wrong key names). Better to fail loudly than silently fall back
+	// to defaults and report stale costs.
+	if len(override.prices) == 0 && len(data) > 0 {
+		return nil, fmt.Errorf("pricing file %s parsed but contained no providers (check the top-level 'providers:' key)", path)
+	}
 	for k, v := range override.prices {
 		t.prices[k] = v
 	}
@@ -91,21 +100,28 @@ func parse(data []byte) (*Table, error) {
 			prices[prefix+":"+model] = price
 		}
 	}
-	return &Table{prices: prices, logger: slog.Default()}, nil
+	return &Table{
+		prices:        prices,
+		warnedUnknown: &sync.Map{},
+		logger:        slog.Default(),
+	}, nil
 }
 
 // WithLogger returns a copy of t that logs the unknown-model warning
 // to lg. Useful for tests that want to silence the warning, or for
 // callers that route logs to a structured handler.
+//
+// Both Tables share the same dedupe state, so an unknown id warned via
+// one Table won't re-warn through the other — keeps the "logs once" guarantee
+// stable across logger swaps. prices is read-only after Load, so sharing
+// the map pointer is safe too.
 func (t *Table) WithLogger(lg *slog.Logger) *Table {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	// Shallow copy is fine — prices is read-only after Load and the
-	// sync.Map is intentionally shared so dedupe survives a logger swap.
 	return &Table{
 		prices:        t.prices,
-		warnedUnknown: sync.Map{},
+		warnedUnknown: t.warnedUnknown,
 		logger:        lg,
 	}
 }
@@ -119,8 +135,10 @@ func (t *Table) Estimate(u provider.Usage) float64 {
 	}
 	p, ok := t.prices[u.ModelID]
 	if !ok {
-		if _, loaded := t.warnedUnknown.LoadOrStore(u.ModelID, struct{}{}); !loaded {
-			t.logger.Warn("cost: unknown model id, treating as zero cost", "model_id", u.ModelID)
+		if t.warnedUnknown != nil {
+			if _, loaded := t.warnedUnknown.LoadOrStore(u.ModelID, struct{}{}); !loaded {
+				t.logger.Warn("cost: unknown model id, treating as zero cost", "model_id", u.ModelID)
+			}
 		}
 		return 0
 	}

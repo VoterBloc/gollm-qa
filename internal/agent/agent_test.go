@@ -936,6 +936,35 @@ func TestAgent_PopulatesEstimatedUSDFromCostTable(t *testing.T) {
 	}
 }
 
+func TestAgent_AuthFailureLeavesEstimateZero(t *testing.T) {
+	// Even with a wired-up cost table, a session that bails before any
+	// Chat call should report zero — there's nothing to bill for. Locks
+	// down the contract around the auth-failure early-return path.
+	drv := &authMockDriver{
+		mockDriver: *newMockDriver(),
+		loginErr:   fmt.Errorf("nessie ate the auth token"),
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+
+	a := New(testPersonaWithCreds(), &mockProvider{}, drv, cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != "auth_failed" {
+		t.Errorf("expected stop reason 'auth_failed', got %q", session.StopReason)
+	}
+	if session.EstimatedUSD != 0 {
+		t.Errorf("expected EstimatedUSD = 0 on auth-failed session, got %v", session.EstimatedUSD)
+	}
+	if session.TokensIn != 0 || session.TokensOut != 0 {
+		t.Errorf("expected zero token counts, got in=%d out=%d", session.TokensIn, session.TokensOut)
+	}
+}
+
 func TestAgent_NilCostTableLeavesEstimateZero(t *testing.T) {
 	prov := &mockProvider{
 		responses: []*provider.Response{

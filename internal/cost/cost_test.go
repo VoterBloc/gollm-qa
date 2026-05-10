@@ -65,6 +65,35 @@ func TestEstimate_UnknownModelLogsOnce(t *testing.T) {
 	}
 }
 
+func TestWithLogger_SharesDedupeStateWithOriginal(t *testing.T) {
+	// First Estimate via the original Table consumes the warning slot.
+	// The Table returned by WithLogger should see "already warned" and
+	// stay quiet, even though it has a different logger attached.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	original := cost.LoadDefaults().WithLogger(logger)
+	usage := provider.Usage{
+		InputTokens:  1,
+		OutputTokens: 1,
+		ModelID:      "yeti:himalayan-7",
+	}
+	original.Estimate(usage)
+	if got := strings.Count(buf.String(), "yeti:himalayan-7"); got != 1 {
+		t.Fatalf("setup: expected 1 warning on original, got %d", got)
+	}
+
+	// Swap to a fresh logger; the dedupe state must follow.
+	var buf2 bytes.Buffer
+	logger2 := slog.New(slog.NewTextHandler(&buf2, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	rerouted := original.WithLogger(logger2)
+	rerouted.Estimate(usage)
+
+	if got := strings.Count(buf2.String(), "yeti:himalayan-7"); got != 0 {
+		t.Errorf("expected dedupe to suppress re-warn after WithLogger, got %d warnings:\n%s", got, buf2.String())
+	}
+}
+
 func TestEstimate_EmptyModelIDReturnsZero(t *testing.T) {
 	tbl := cost.LoadDefaults()
 	got := tbl.Estimate(provider.Usage{
@@ -138,6 +167,29 @@ func TestLoad_EmptyPathReturnsDefaults(t *testing.T) {
 func TestLoad_MissingFileErrors(t *testing.T) {
 	if _, err := cost.Load("/nonexistent/fishsticks.yaml"); err == nil {
 		t.Error("expected Load to error on missing file")
+	}
+}
+
+func TestLoad_EmptyProvidersErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shape-mistake.yaml")
+	// Wrong top-level key — common shape mistake (e.g. dropping the
+	// "providers:" wrapper). Should fail loudly, not silently fall back.
+	body := []byte(`
+claude:
+  sonnet-4-5:
+    input_per_million_usd: 99.99
+    output_per_million_usd: 88.88
+`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cost.Load(path)
+	if err == nil {
+		t.Fatal("expected error for pricing file with no providers")
+	}
+	if !strings.Contains(err.Error(), "no providers") {
+		t.Errorf("error %q missing 'no providers' guidance", err)
 	}
 }
 

@@ -13,7 +13,12 @@ type Session struct {
 	UXNotes      []UXNote     `json:"ux_notes,omitempty"`
 	TokensIn     int          `json:"tokens_in"`
 	TokensOut    int          `json:"tokens_out"`
-	ModelID      string       `json:"model_id,omitempty"`     // "<provider>:<model>" — set from Usage.ModelID
+	// ModelID is the "<provider>:<model>" spec stamped from each
+	// Usage.ModelID, last-write-wins. Today providers stamp a single id
+	// per session so this is stable in practice; if a future routing
+	// scheme switches models mid-run, downstream consumers should treat
+	// this as "the last model used" rather than a session invariant.
+	ModelID      string       `json:"model_id,omitempty"`
 	EstimatedUSD float64      `json:"estimated_usd,omitempty"` // populated when Config.Cost is set
 	Steps        int          `json:"steps"`
 	StopReason   string       `json:"stop_reason"` // "goals_complete", "step_limit", "error", "context_limit"
