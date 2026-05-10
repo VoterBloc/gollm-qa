@@ -217,6 +217,8 @@ func TestDefaults_HasExpectedModels(t *testing.T) {
 	mustBePriced := []string{
 		"openai:gpt-4o",
 		"openai:gpt-4o-mini",
+		"gemini:2.5-pro",
+		"gemini:2.5-flash",
 	}
 	for _, id := range mustBePriced {
 		if !tbl.Has(id) {

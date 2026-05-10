@@ -8,6 +8,7 @@ import (
 
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // exercise the real registration
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/gemini" // exercise the real registration
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // exercise the real registration
 )
 
@@ -119,6 +120,16 @@ func TestNew_OpenAISpecResolves(t *testing.T) {
 	p, err := provider.New("openai:gpt-4o")
 	if err != nil {
 		t.Fatalf("New(\"openai:gpt-4o\"): %v", err)
+	}
+	if p == nil {
+		t.Fatal("New returned nil provider")
+	}
+}
+
+func TestNew_GeminiSpecResolves(t *testing.T) {
+	p, err := provider.New("gemini:2.5-pro")
+	if err != nil {
+		t.Fatalf("New(\"gemini:2.5-pro\"): %v", err)
 	}
 	if p == nil {
 		t.Fatal("New returned nil provider")

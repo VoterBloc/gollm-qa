@@ -21,6 +21,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/introspect"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // registers "claude" provider
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/gemini" // registers "gemini" provider
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // registers "openai" provider
 )
 

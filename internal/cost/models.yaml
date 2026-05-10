@@ -25,3 +25,14 @@ providers:
     gpt-4o-mini:
       input_per_million_usd: 0.15
       output_per_million_usd: 0.60
+  gemini:
+    # Gemini pricing is tiered by context length — these rates apply
+    # to prompts under the lower tier (≤ 200K input tokens for 2.5
+    # Pro). Override per-deployment if you regularly send longer
+    # prompts and want truthful estimates.
+    2.5-pro:
+      input_per_million_usd: 1.25
+      output_per_million_usd: 10.00
+    2.5-flash:
+      input_per_million_usd: 0.30
+      output_per_million_usd: 2.50
