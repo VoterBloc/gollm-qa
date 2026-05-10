@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -51,6 +52,9 @@ func healthcheckCmd(args []string) error {
 	}
 	defer resp.Body.Close()
 
+	// /health uses status code as the source of truth — body content
+	// is informational only. The server returns non-2xx when unhealthy,
+	// so a 2xx here is a real "ready" signal regardless of body shape.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("probe %s returned status %d", target, resp.StatusCode)
 	}
@@ -73,20 +77,19 @@ func resolveHealthcheckURL(urlFlag, addr string) string {
 }
 
 // portFromAddr returns the port from a Go-style listen address.
-// Accepts "", ":8080", "host:8080", "0.0.0.0:8080", "[::]:8080",
-// or a bare port like "8080". Anything that doesn't parse cleanly
-// returns "" so the caller falls back to the default port.
+// Accepts the shapes net.Listen accepts (":8080", "host:8080",
+// "0.0.0.0:8080", "[::]:8080") via net.SplitHostPort. Anything that
+// doesn't parse cleanly returns "" so the caller falls back to the
+// default port — better than threading malformed input into the URL
+// only to surface as an opaque request-build error later.
 func portFromAddr(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return ""
 	}
-	// Strip everything up to and including the last colon. Handles
-	// host:port, ":port", and IPv6 [::]:port — the last colon is
-	// always the port delimiter in well-formed listen addresses.
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		return addr[i+1:]
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
 	}
-	// Bare port form ("8080"). Accept it.
-	return addr
+	return port
 }
