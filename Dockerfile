@@ -43,6 +43,13 @@ COPY --from=build /out/gollm /usr/local/bin/gollm
 
 EXPOSE 8080
 
+# distroless has no shell, no curl, no wget — only /usr/local/bin/gollm.
+# Probing /health through the binary itself sidesteps that constraint
+# and keeps the runtime image minimal. Cohort's compose uses this for
+# `depends_on: engine: condition: service_healthy`.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/usr/local/bin/gollm", "healthcheck"]
+
 # nonroot UID 65532. Clerk JWT validation comes from the
 # COHORT_CLERK_ISSUER env var (empty = dev mode, no auth).
 USER nonroot
