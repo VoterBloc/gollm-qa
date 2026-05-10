@@ -57,6 +57,8 @@ func main() {
 		err = seedCmd(os.Args[2:])
 	case "serve":
 		err = serveCmd(os.Args[2:])
+	case "healthcheck":
+		err = healthcheckCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -80,6 +82,7 @@ Usage:
   gollm run --config <path> --personas <dir> [flags]
   gollm purge --config <path>
   gollm serve [--addr :8080] [--apps apps] [--campaigns campaigns] [--personas personas] [--clerk-issuer URL]
+  gollm healthcheck [--addr :8080] [--url URL] [--timeout 2s]
 
 Run "gollm <subcommand> -h" for subcommand-specific flags.
 `)
