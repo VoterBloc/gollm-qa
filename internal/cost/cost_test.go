@@ -211,4 +211,16 @@ func TestDefaults_HasExpectedModels(t *testing.T) {
 	if !tbl.Has(provider.DefaultModelSpec) {
 		t.Errorf("defaults missing pricing for %q (the registry default)", provider.DefaultModelSpec)
 	}
+	// Each provider that lands in the epic should ship priced — otherwise
+	// the unknown-model warning fires on first request and Estimated USD
+	// reports zero. Add a model here when its provider package lands.
+	mustBePriced := []string{
+		"openai:gpt-4o",
+		"openai:gpt-4o-mini",
+	}
+	for _, id := range mustBePriced {
+		if !tbl.Has(id) {
+			t.Errorf("defaults missing pricing for %q", id)
+		}
+	}
 }
