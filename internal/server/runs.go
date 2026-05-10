@@ -63,6 +63,12 @@ type RunRequest struct {
 	// then to provider.DefaultModelSpec. Unknown specs return 400
 	// before any agent starts.
 	Model string `json:"model,omitempty"`
+
+	// BudgetPerAgentUSD caps each agent's spend at the given USD
+	// estimate. When the running cost crosses the ceiling mid-loop,
+	// the agent gets one wrap-up turn before exiting with
+	// stop_reason="budget_exhausted". Zero (default) = no limit.
+	BudgetPerAgentUSD float64 `json:"budget_per_agent_usd,omitempty"`
 }
 
 const (
@@ -180,7 +186,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), llm, sse)
+	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), req.BudgetPerAgentUSD, llm, sse)
 	sse.write(RunEvent{Event: agent.Event{Kind: runEventEnd, At: time.Now()}})
 }
 
@@ -212,7 +218,7 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 // llm is shared across every agent in the run — Anthropic / OpenAI SDK
 // clients are concurrency-safe, and the stubProvider used in tests
 // serializes Chat calls under a mutex.
-func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, llm provider.Provider, sse *sseWriter) {
+func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, budgetPerAgent float64, llm provider.Provider, sse *sseWriter) {
 	drvFn := s.cfg.DriverFactory
 	if drvFn == nil {
 		drvFn = func(appCfg *config.AppConfig, logger *slog.Logger) driver.Driver {
@@ -237,8 +243,9 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 
 			drv := drvFn(appCfg, s.logger)
 			cfg := agent.Config{
-				MaxSteps: maxSteps,
-				Cost:     s.cfg.Cost,
+				MaxSteps:          maxSteps,
+				Cost:              s.cfg.Cost,
+				BudgetPerAgentUSD: budgetPerAgent,
 				OnEvent: func(ev agent.Event) {
 					sse.write(RunEvent{Persona: p.Name, Event: ev})
 				},

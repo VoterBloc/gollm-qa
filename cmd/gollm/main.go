@@ -88,15 +88,16 @@ Run "gollm <subcommand> -h" for subcommand-specific flags.
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var (
-		configPath  string
-		personaDir  string
-		maxAgents   int
-		outputDir   string
-		maxSteps    int
-		concurrency int
-		stepDelay   time.Duration
-		pricingPath string
-		modelSpec   string
+		configPath      string
+		personaDir      string
+		maxAgents       int
+		outputDir       string
+		maxSteps        int
+		concurrency     int
+		stepDelay       time.Duration
+		pricingPath     string
+		modelSpec       string
+		budgetPerAgent  float64
 	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
 	fs.StringVar(&personaDir, "personas", "", "path to persona directory (required)")
@@ -107,6 +108,7 @@ func runCmd(args []string) error {
 	fs.DurationVar(&stepDelay, "step-delay", 0, "delay between agent steps (e.g. 1s)")
 	fs.StringVar(&pricingPath, "pricing", "", "optional pricing YAML path; merges over the embedded defaults")
 	fs.StringVar(&modelSpec, "model", "", "<provider>:<model> spec (e.g. claude:sonnet-4-5, openai:gpt-4o); overrides app config's default_model")
+	fs.Float64Var(&budgetPerAgent, "budget-per-agent", 0, "USD soft ceiling per agent; agent gets one wrap-up turn after crossing. 0 = no limit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -174,9 +176,10 @@ func runCmd(args []string) error {
 	logger.Info("using model", "spec", resolvedSpec)
 
 	agentCfg := agent.Config{
-		MaxSteps:  maxSteps,
-		StepDelay: stepDelay,
-		Cost:      pricing,
+		MaxSteps:          maxSteps,
+		StepDelay:         stepDelay,
+		Cost:              pricing,
+		BudgetPerAgentUSD: budgetPerAgent,
 	}
 
 	g, ctx := errgroup.WithContext(ctx)

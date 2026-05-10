@@ -46,7 +46,27 @@ type Config struct {
 	// of run. Nil leaves the field zero — useful in tests, or when cost
 	// accounting is irrelevant (local-model runs, fixtures).
 	Cost *cost.Table
+
+	// BudgetPerAgentUSD is the soft USD ceiling for this agent's run.
+	// When the running estimate (computed via Cost) crosses the budget,
+	// the agent gets one more turn to wrap up and exits with
+	// StopReason="budget_exhausted". Zero (the default) disables
+	// enforcement; nil Cost also disables enforcement regardless of
+	// budget value, since we can't estimate cost without a price table.
+	BudgetPerAgentUSD float64
 }
+
+// budgetExhaustedNudge is the wrap-up message appended when an agent's
+// running cost crosses the per-agent budget. RoleUser (not RoleSystem)
+// because the Claude provider treats system messages as a single
+// up-front prompt — a second system message would clobber the persona
+// prompt, losing context for the wrap-up turn.
+const budgetExhaustedNudge = "Budget exhausted. Stop, summarize what you did, and report any UX observations before exiting. Do not call any more tools."
+
+// StopReasonBudgetExhausted is the session.StopReason set when an agent
+// exits because BudgetPerAgentUSD was crossed mid-loop. Exported so
+// reports / dashboards can group by reason without string-matching.
+const StopReasonBudgetExhausted = "budget_exhausted"
 
 // emit calls OnEvent if it's set. Stamping At inside this helper keeps
 // the call sites concise.
@@ -162,6 +182,13 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 	a.logger.Info("starting agent run", "goals", len(a.persona.Goals), "max_steps", a.config.MaxSteps)
 
+	// budgetExhausted flips to true once the running cost has crossed
+	// BudgetPerAgentUSD and we've appended the wrap-up nudge. The next
+	// loop iteration is the agent's one chance to summarize cleanly;
+	// after that turn we exit with StopReasonBudgetExhausted regardless
+	// of whether the model still wanted to call tools.
+	budgetExhausted := false
+
 	for step := 1; step <= a.config.MaxSteps; step++ {
 		if ctx.Err() != nil {
 			session.StopReason = "cancelled"
@@ -202,10 +229,17 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		messages = append(messages, resp.Message)
 
-		// No tool calls — the model is done talking.
+		// No tool calls — the model is done talking. If we'd already
+		// issued the budget nudge, this is the wrap-up turn finishing
+		// cleanly; tag accordingly so reports can distinguish "ran out
+		// of budget" from "completed naturally."
 		if len(resp.Message.ToolCalls) == 0 {
 			a.logger.Info("agent finished (no more tool calls)", "step", step)
-			session.StopReason = "goals_complete"
+			if budgetExhausted {
+				session.StopReason = StopReasonBudgetExhausted
+			} else {
+				session.StopReason = "goals_complete"
+			}
 			break
 		}
 
@@ -256,6 +290,34 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			session.StopReason = "context_limit"
 			break
 		}
+
+		// If the prior iteration appended the budget nudge, that just-
+		// completed turn was the wrap-up. The model may have ignored
+		// the nudge and called tools anyway; either way, we stop here
+		// rather than letting cost continue to accumulate.
+		if budgetExhausted {
+			a.logger.Info("budget exhausted, ending wrap-up turn", "step", step)
+			session.StopReason = StopReasonBudgetExhausted
+			break
+		}
+
+		// If the running cost just crossed the budget, queue the
+		// wrap-up nudge for the next iteration. Skipped when Cost is
+		// nil (no estimate possible) or BudgetPerAgentUSD is zero
+		// (no-limit default).
+		if a.budgetCrossed(session) {
+			a.logger.Info("budget crossed, requesting wrap-up",
+				"step", step,
+				"budget_usd", a.config.BudgetPerAgentUSD,
+				"tokens_in", session.TokensIn,
+				"tokens_out", session.TokensOut,
+			)
+			budgetExhausted = true
+			messages = append(messages, provider.Message{
+				Role:    provider.RoleUser,
+				Content: budgetExhaustedNudge,
+			})
+		}
 	}
 
 	if session.StopReason == "" {
@@ -283,6 +345,21 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 	a.emit(EventSessionEnd, session.Steps, session)
 
 	return session, nil
+}
+
+// budgetCrossed reports whether the running cost has exceeded the
+// configured per-agent budget. Returns false if Cost is nil or
+// BudgetPerAgentUSD is zero (the default = "no limit").
+func (a *Agent) budgetCrossed(session *Session) bool {
+	if a.config.Cost == nil || a.config.BudgetPerAgentUSD <= 0 {
+		return false
+	}
+	running := a.config.Cost.Estimate(provider.Usage{
+		InputTokens:  session.TokensIn,
+		OutputTokens: session.TokensOut,
+		ModelID:      session.ModelID,
+	})
+	return running > a.config.BudgetPerAgentUSD
 }
 
 func (a *Agent) initGoals() []GoalResult {
