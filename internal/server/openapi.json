@@ -194,7 +194,8 @@
           },
           "persona_set": {
             "type": "string",
-            "description": "Name of a collection (subdirectory) under personas/. Mutually exclusive with `personas`."
+            "description": "Name of a persona set under personas/. Resolves to either `<personas>/<name>/` (a collection directory) or `<personas>/<name>.yaml` / `.yml` (a singleton file treated as a one-element set). The directory wins on ambiguity. Mutually exclusive with `personas`.",
+            "example": "staging-leaders"
           },
           "personas": {
             "type": "array",

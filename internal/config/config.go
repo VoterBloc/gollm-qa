@@ -208,6 +208,9 @@ func LoadPersonas(dir string) ([]*agent.Persona, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing persona %s: %w", entry.Name(), err)
 		}
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("persona %s: %w", entry.Name(), err)
+		}
 		personas = append(personas, p)
 	}
 

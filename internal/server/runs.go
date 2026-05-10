@@ -508,19 +508,14 @@ func (s *Server) resolvePersonas(req RunRequest) ([]*agent.Persona, error) {
 			if err != nil {
 				return nil, fmt.Errorf("personas[%d]: %w", i, err)
 			}
+			if err := p.Validate(); err != nil {
+				return nil, fmt.Errorf("personas[%d]: %w", i, err)
+			}
 			out = append(out, p)
 		}
 		return out, nil
 	}
-	dir, err := resolvePersonaCollection(s.cfg.PersonasDir, req.PersonaSet)
-	if err != nil {
-		return nil, err
-	}
-	personas, err := config.LoadPersonas(dir)
-	if err != nil {
-		return nil, fmt.Errorf("loading personas: %w", err)
-	}
-	return personas, nil
+	return s.resolveNamedPersonaSet(req.PersonaSet)
 }
 
 // runSources reports where each input came from for the run_start
@@ -547,9 +542,19 @@ func runSources(req RunRequest) map[string]string {
 // resolveYAMLByName checks that <dir>/<name>.yaml or .yml exists. Used
 // at submit time so we 4xx fast on typos instead of failing later in
 // the run.
+//
+// Names that contain `..` segments or absolute paths are rejected with
+// the standard "not found" error — defense-in-depth so a panel sending
+// `config_name: "../personas/leaked"` can't enumerate files outside
+// the configs directory. The wire-shape stays the same as the
+// genuine-typo case so existing 400 string-matchers don't have to grow
+// a second branch.
 func resolveYAMLByName(dir, name string) (string, error) {
 	if dir == "" {
 		return "", errors.New("server has no configs directory configured")
+	}
+	if !filepath.IsLocal(name) {
+		return "", fmt.Errorf("config %q not found", name)
 	}
 	for _, ext := range []string{".yaml", ".yml"} {
 		p := filepath.Join(dir, name+ext)
@@ -561,25 +566,66 @@ func resolveYAMLByName(dir, name string) (string, error) {
 	return "", fmt.Errorf("config %q not found", name)
 }
 
-// resolvePersonaCollection checks that <dir>/<name>/ exists, is a
-// directory, and contains at least one .yaml file. Loose top-level
-// .yaml personas aren't accepted as a "persona set" — those are
-// individual personas; runs need a collection.
-func resolvePersonaCollection(dir, name string) (string, error) {
-	if dir == "" {
-		return "", errors.New("server has no personas directory configured")
+// resolveNamedPersonaSet maps a persona_set name to one or more
+// loaded *agent.Persona, accepting either:
+//
+//  1. A directory at <dir>/<name>/ containing one or more .yaml files
+//     — the original "collection" shape. Wins on ambiguity if both
+//     forms exist.
+//  2. A single file at <dir>/<name>.yaml (or .yml) — a singleton
+//     "set of one." Lets a run pick one persona by name without first
+//     wrapping it in a directory, matching how /v1/personas already
+//     lists both shapes side by side (#49).
+//
+// Anything else returns the same `persona collection %q not found`
+// error the original collection-only resolver did, so existing 400
+// responses don't change shape for the bad-input case.
+func (s *Server) resolveNamedPersonaSet(name string) ([]*agent.Persona, error) {
+	if s.cfg.PersonasDir == "" {
+		return nil, errors.New("server has no personas directory configured")
 	}
-	p := filepath.Join(dir, name)
-	info, err := os.Stat(p)
-	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("persona collection %q not found", name)
+	// Reject path-traversal attempts up front — wire-shape matches the
+	// genuine-typo "not found" case so existing 400 string-matchers
+	// don't have to grow a second branch. Same defense as
+	// resolveYAMLByName.
+	if !filepath.IsLocal(name) {
+		return nil, fmt.Errorf("persona collection %q not found", name)
 	}
-	count, err := countYAMLFiles(p)
-	if err != nil {
-		return "", err
+
+	// Collection wins on ambiguity: if `<dir>/<name>/` is a directory,
+	// use it even if `<dir>/<name>.yaml` also exists. Locking this
+	// order in matches the issue's acceptance criterion and keeps
+	// existing collections that happened to share a name with a stray
+	// file on disk continuing to work.
+	collectionDir := filepath.Join(s.cfg.PersonasDir, name)
+	if info, err := os.Stat(collectionDir); err == nil && info.IsDir() {
+		personas, err := config.LoadPersonas(collectionDir)
+		if err != nil {
+			return nil, fmt.Errorf("loading personas: %w", err)
+		}
+		if len(personas) == 0 {
+			return nil, fmt.Errorf("persona collection %q has no .yaml files", name)
+		}
+		return personas, nil
 	}
-	if count == 0 {
-		return "", fmt.Errorf("persona collection %q has no .yaml files", name)
+
+	// Singleton-file fallback. Try .yaml first then .yml; both are
+	// accepted everywhere else the loader runs.
+	for _, ext := range []string{".yaml", ".yml"} {
+		filePath := filepath.Join(s.cfg.PersonasDir, name+ext)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		p, err := config.ParsePersona(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing persona %s: %w", name+ext, err)
+		}
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("persona %s: %w", name+ext, err)
+		}
+		return []*agent.Persona{p}, nil
 	}
-	return p, nil
+
+	return nil, fmt.Errorf("persona collection %q not found", name)
 }
