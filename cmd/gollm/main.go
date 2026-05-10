@@ -76,7 +76,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `gollm — AI-driven synthetic user platform
 
 Usage:
-  gollm seed --config <path> --campaign <path> --output <dir>
+  gollm seed --config <path> --campaign <path> --output <dir> [flags]
   gollm run --config <path> --personas <dir> [flags]
   gollm purge --config <path>
   gollm serve [--addr :8080] [--apps apps] [--campaigns campaigns] [--personas personas] [--clerk-issuer URL]
@@ -96,6 +96,7 @@ func runCmd(args []string) error {
 		concurrency int
 		stepDelay   time.Duration
 		pricingPath string
+		modelSpec   string
 	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
 	fs.StringVar(&personaDir, "personas", "", "path to persona directory (required)")
@@ -105,6 +106,7 @@ func runCmd(args []string) error {
 	fs.IntVar(&concurrency, "concurrency", 3, "max concurrent agents")
 	fs.DurationVar(&stepDelay, "step-delay", 0, "delay between agent steps (e.g. 1s)")
 	fs.StringVar(&pricingPath, "pricing", "", "optional pricing YAML path; merges over the embedded defaults")
+	fs.StringVar(&modelSpec, "model", "", "<provider>:<model> spec (e.g. claude:sonnet-4-5, openai:gpt-4o); overrides app config's default_model")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -164,6 +166,13 @@ func runCmd(args []string) error {
 		return fmt.Errorf("loading pricing: %w", err)
 	}
 
+	resolvedSpec := provider.ResolveSpec(modelSpec, appCfg.DefaultModel)
+	llm, err := provider.New(resolvedSpec)
+	if err != nil {
+		return fmt.Errorf("model %q: %w", resolvedSpec, err)
+	}
+	logger.Info("using model", "spec", resolvedSpec)
+
 	agentCfg := agent.Config{
 		MaxSteps:  maxSteps,
 		StepDelay: stepDelay,
@@ -178,8 +187,6 @@ func runCmd(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "\nStarting %d agents against %s (concurrency: %d, max steps: %d)\n\n",
 		len(personas), appCfg.Name, concurrency, maxSteps)
-
-	llm := provider.MustNew(provider.DefaultModelSpec)
 
 	for _, p := range personas {
 		g.Go(func() error {
@@ -333,10 +340,12 @@ func seedCmd(args []string) error {
 		configPath   string
 		campaignPath string
 		outputDir    string
+		modelSpec    string
 	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
 	fs.StringVar(&campaignPath, "campaign", "", "path to campaign YAML describing cohorts to generate (required)")
 	fs.StringVar(&outputDir, "output", "", "directory to write generated persona YAMLs into (required)")
+	fs.StringVar(&modelSpec, "model", "", "<provider>:<model> spec for persona generation; overrides app config's default_model")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -363,7 +372,14 @@ func seedCmd(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	gen := persona.NewGenerator(provider.MustNew(provider.DefaultModelSpec))
+	resolvedSpec := provider.ResolveSpec(modelSpec, appCfg.DefaultModel)
+	llm, err := provider.New(resolvedSpec)
+	if err != nil {
+		return fmt.Errorf("model %q: %w", resolvedSpec, err)
+	}
+	logger.Info("using model", "spec", resolvedSpec)
+
+	gen := persona.NewGenerator(llm)
 	seen := persona.NewSeenIdentities()
 
 	fmt.Fprintf(os.Stderr, "\nSeeding %d personas across %d cohorts for %s\n",

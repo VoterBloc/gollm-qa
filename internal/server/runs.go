@@ -57,6 +57,12 @@ type RunRequest struct {
 	// nil/0 falls back to defaultMaxSteps. Capped at maxAllowedSteps as a
 	// runaway-cost guard.
 	MaxSteps int `json:"max_steps,omitempty"`
+
+	// Model is the "<provider>:<model>" spec for this run. Optional;
+	// when omitted, falls back to the resolved app-config default,
+	// then to provider.DefaultModelSpec. Unknown specs return 400
+	// before any agent starts.
+	Model string `json:"model,omitempty"`
 }
 
 const (
@@ -121,6 +127,20 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve and validate the model spec before opening the SSE stream.
+	// An unknown prefix here should land as a clean 400, not as a mid-stream
+	// run_error after the client has already committed to a long-poll.
+	modelSpec := provider.ResolveSpec(req.Model, appCfg.DefaultModel)
+	provFn := s.cfg.ProviderFactory
+	if provFn == nil {
+		provFn = provider.New
+	}
+	llm, err := provFn(modelSpec)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("model %q: %w", modelSpec, err))
+		return
+	}
+
 	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -160,7 +180,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), sse)
+	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), llm, sse)
 	sse.write(RunEvent{Event: agent.Event{Kind: runEventEnd, At: time.Now()}})
 }
 
@@ -188,22 +208,17 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 // runAgents fans out personas across goroutines (bounded concurrency),
 // each writing events to the shared SSE stream via the persona-tagged
 // callback. Returns when every agent has finished.
-func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, sse *sseWriter) {
-	provFn := s.cfg.ProviderFactory
-	if provFn == nil {
-		provFn = func() provider.Provider { return provider.MustNew(provider.DefaultModelSpec) }
-	}
+//
+// llm is shared across every agent in the run — Anthropic / OpenAI SDK
+// clients are concurrency-safe, and the stubProvider used in tests
+// serializes Chat calls under a mutex.
+func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, llm provider.Provider, sse *sseWriter) {
 	drvFn := s.cfg.DriverFactory
 	if drvFn == nil {
 		drvFn = func(appCfg *config.AppConfig, logger *slog.Logger) driver.Driver {
 			return apidriver.New(appCfg, logger)
 		}
 	}
-
-	// One provider instance shared across agents — Anthropic SDK clients
-	// are concurrency-safe, and tests inject providers (stubProvider in
-	// runs_test.go) that are also safe for concurrent Chat calls.
-	llm := provFn()
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)

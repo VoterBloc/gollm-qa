@@ -85,3 +85,21 @@ func RegisteredPrefixes() []string {
 	sort.Strings(out)
 	return out
 }
+
+// ResolveSpec returns the first non-empty model spec among candidates,
+// or DefaultModelSpec if all are empty. Doesn't validate the result —
+// callers should pass the return value through New (or MustNew, for
+// guaranteed-valid inputs) so an unknown prefix surfaces before any
+// downstream work starts.
+//
+// The "first non-empty wins" rule encodes the cascade documented on
+// #38: CLI flag > request body > app-config default > built-in default.
+// Each entry point passes the sources it has, in priority order.
+func ResolveSpec(candidates ...string) string {
+	for _, c := range candidates {
+		if c != "" {
+			return c
+		}
+	}
+	return DefaultModelSpec
+}

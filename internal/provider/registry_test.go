@@ -148,6 +148,27 @@ func TestRegister_DuplicatePanics(t *testing.T) {
 	})
 }
 
+func TestResolveSpec_FirstNonEmptyWins(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidates []string
+		want       string
+	}{
+		{"all empty falls back to default", []string{"", "", ""}, provider.DefaultModelSpec},
+		{"no candidates falls back to default", nil, provider.DefaultModelSpec},
+		{"first non-empty wins", []string{"openai:gpt-4o", "claude:sonnet-4-5"}, "openai:gpt-4o"},
+		{"skips leading empties", []string{"", "", "claude:opus-4-7"}, "claude:opus-4-7"},
+		{"single non-empty", []string{"yeti:abominable-9000"}, "yeti:abominable-9000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := provider.ResolveSpec(tc.candidates...); got != tc.want {
+				t.Errorf("ResolveSpec(%v) = %q, want %q", tc.candidates, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRegisteredPrefixes_Sorted(t *testing.T) {
 	prefixes := provider.RegisteredPrefixes()
 	for i := 1; i < len(prefixes); i++ {
