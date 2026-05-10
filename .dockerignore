@@ -1,0 +1,37 @@
+# Exclude everything that doesn't need to enter the build context.
+# Smaller context = faster builds and no accidental secrets in image
+# layers.
+
+.git
+.gitignore
+.github
+.idea
+.vscode
+.claude
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Build outputs / reports
+gollm
+reports/
+*.test
+*.out
+coverage.out
+
+# Browser sidecar — out of scope for the API-only image
+browser/node_modules
+browser/dist
+browser/.parcel-cache
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Docs that don't affect the binary. (Dockerfile + .dockerignore are
+# intentionally NOT listed — Docker needs them in context.)
+README.md
+CLAUDE.md
