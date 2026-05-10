@@ -215,6 +215,12 @@
             "type": "string",
             "description": "`<provider>:<model>` spec selecting which LLM drives this run. Optional; falls back to the inline/named config's `default_model`, then to the engine's built-in default. Unknown prefix → 400 with the registered providers listed.",
             "example": "openai:gpt-4o"
+          },
+          "budget_per_agent_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Soft USD ceiling per agent. When the running estimate crosses this value mid-loop, the agent gets one wrap-up turn and exits with `stop_reason: \"budget_exhausted\"`. 0 (default) disables enforcement; estimation also requires the engine to have a pricing entry for the resolved model — unknown models log once and treat as zero, never crossing the ceiling.",
+            "example": 0.50
           }
         }
       },

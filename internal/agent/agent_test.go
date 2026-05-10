@@ -11,13 +11,17 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
 
-// mockProvider returns canned responses in sequence.
+// mockProvider returns canned responses in sequence and records the
+// tool slice passed on each Chat call. Tests that need to assert on
+// tool offerings (e.g. wrap-up restriction) read toolsByCall[i].
 type mockProvider struct {
-	responses []*provider.Response
-	callIndex int
+	responses    []*provider.Response
+	callIndex    int
+	toolsByCall  [][]provider.Tool
 }
 
-func (m *mockProvider) Chat(_ context.Context, _ []provider.Message, _ []provider.Tool) (*provider.Response, error) {
+func (m *mockProvider) Chat(_ context.Context, _ []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+	m.toolsByCall = append(m.toolsByCall, tools)
 	if m.callIndex >= len(m.responses) {
 		return &provider.Response{
 			Message:    provider.Message{Role: provider.RoleAssistant, Content: "I'm done, nothing left to do."},
@@ -963,6 +967,349 @@ func TestAgent_AuthFailureLeavesEstimateZero(t *testing.T) {
 	if session.TokensIn != 0 || session.TokensOut != 0 {
 		t.Errorf("expected zero token counts, got in=%d out=%d", session.TokensIn, session.TokensOut)
 	}
+}
+
+func TestAgent_BudgetExhaustedTriggersWrapUp(t *testing.T) {
+	// First response calls a tool with high token counts (1M input +
+	// 1M output = $18 against claude:sonnet-4-5 — well over a $0.01
+	// budget). After tool execution the loop appends the wrap-up
+	// nudge. The second canned response is the agent's reply to the
+	// nudge — text-only, no tool calls.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_overspender", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: "OK, wrapping up. I browsed one bloc and saw nothing weird.",
+				},
+				StopReason: "end",
+				Usage: provider.Usage{
+					InputTokens:  100,
+					OutputTokens: 50,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != StopReasonBudgetExhausted {
+		t.Errorf("StopReason = %q, want %q", session.StopReason, StopReasonBudgetExhausted)
+	}
+	// Two Chat calls — the over-budget turn plus the wrap-up turn.
+	if prov.callIndex != 2 {
+		t.Errorf("expected 2 Chat calls (over-budget + wrap-up), got %d", prov.callIndex)
+	}
+	if session.EstimatedUSD <= 0.01 {
+		t.Errorf("EstimatedUSD = %v, expected to be over the $0.01 budget", session.EstimatedUSD)
+	}
+}
+
+func TestAgent_BudgetNotCrossedHitsGoalsComplete(t *testing.T) {
+	// Tiny token counts well under the $0.01 budget — the agent
+	// should finish on goals_complete, no nudge appended.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "All done."},
+				StopReason: "end",
+				Usage: provider.Usage{
+					InputTokens:  100,
+					OutputTokens: 20,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != "goals_complete" {
+		t.Errorf("StopReason = %q, want goals_complete", session.StopReason)
+	}
+}
+
+func TestAgent_ZeroBudgetMeansNoLimit(t *testing.T) {
+	// Same overspending turn as the wrap-up test, but BudgetPerAgentUSD=0
+	// disables enforcement — the agent finishes naturally on goals_complete.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_freerein", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Looks great."},
+				StopReason: "end",
+				Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != "goals_complete" {
+		t.Errorf("StopReason = %q, want goals_complete (budget=0 means no limit)", session.StopReason)
+	}
+}
+
+func TestAgent_NilCostTableSkipsBudgetEnforcement(t *testing.T) {
+	// Even with BudgetPerAgentUSD set, a nil Cost table leaves
+	// enforcement disabled — there's no way to estimate cost without
+	// a price table.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_blind", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Continuing."},
+				StopReason: "end",
+				Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = nil
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != "goals_complete" {
+		t.Errorf("StopReason = %q, want goals_complete (nil Cost disables enforcement)", session.StopReason)
+	}
+}
+
+func TestAgent_BudgetWrapUpExitsEvenIfModelKeepsCallingTools(t *testing.T) {
+	// Pathological model: ignores the wrap-up nudge and keeps calling
+	// tools. Spec says "one final iteration to wrap up cleanly" — we
+	// honor that ceiling, exit on budget_exhausted regardless of
+	// whether the model cooperated.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_first", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				// Wrap-up turn — the model defies the nudge and asks
+				// for another tool call. We should still exit.
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_defy", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  10,
+					OutputTokens: 10,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != StopReasonBudgetExhausted {
+		t.Errorf("StopReason = %q, want %q", session.StopReason, StopReasonBudgetExhausted)
+	}
+	if prov.callIndex != 2 {
+		t.Errorf("expected exactly 2 Chat calls (no third turn after wrap-up), got %d", prov.callIndex)
+	}
+}
+
+func TestAgent_BudgetWrapUpStripsDriverTools(t *testing.T) {
+	// On the wrap-up turn, the agent should offer only built-in tools
+	// (report_ux_observation, mark_goal_complete). A defying model
+	// can still report what it did, but can't fire driver tools like
+	// browse_blocs / join_bloc against the target app.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_overspender", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Wrapping up."},
+				StopReason: "end",
+				Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	if _, err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(prov.toolsByCall) != 2 {
+		t.Fatalf("expected 2 Chat calls, got %d", len(prov.toolsByCall))
+	}
+
+	// First call should include driver tools (browse_blocs etc.).
+	if !hasToolNamed(prov.toolsByCall[0], "browse_blocs") {
+		t.Errorf("first Chat call should offer browse_blocs, got tools: %v", toolNames(prov.toolsByCall[0]))
+	}
+
+	// Wrap-up call must not include any driver tool.
+	if hasToolNamed(prov.toolsByCall[1], "browse_blocs") {
+		t.Errorf("wrap-up Chat call must not offer browse_blocs, got tools: %v", toolNames(prov.toolsByCall[1]))
+	}
+	// Built-ins should still be available so the model can report
+	// what it did without becoming completely mute.
+	if !hasToolNamed(prov.toolsByCall[1], "report_ux_observation") {
+		t.Errorf("wrap-up Chat call should still offer report_ux_observation, got tools: %v", toolNames(prov.toolsByCall[1]))
+	}
+}
+
+func TestAgent_SingleShotOverBudgetTagsAsBudgetExhausted(t *testing.T) {
+	// One text-only response that's already over budget should tag
+	// as budget_exhausted, not goals_complete — cost-truthful labeling
+	// matters when an expensive single-shot completion would otherwise
+	// look like a clean exit in reports.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Here's a 2M-token essay you didn't ask for."},
+				StopReason: "end",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.BudgetPerAgentUSD = 0.01
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != StopReasonBudgetExhausted {
+		t.Errorf("StopReason = %q, want %q (single-shot text-only response that crosses budget)", session.StopReason, StopReasonBudgetExhausted)
+	}
+}
+
+func hasToolNamed(tools []provider.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNames(tools []provider.Tool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
 }
 
 func TestAgent_NilCostTableLeavesEstimateZero(t *testing.T) {

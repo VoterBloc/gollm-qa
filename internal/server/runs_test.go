@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/VoterBloc/gollm-qa/internal/config"
+	"github.com/VoterBloc/gollm-qa/internal/cost"
 	"github.com/VoterBloc/gollm-qa/internal/driver"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
@@ -384,6 +385,73 @@ behavior: lurker
 
 	if seen() != "openai:gpt-4o-mini" {
 		t.Errorf("factory got spec %q, want %q (app-config default_model should apply when request omits model)", seen(), "openai:gpt-4o-mini")
+	}
+}
+
+func TestCreateRun_BudgetPerAgentTriggersExhaustedStop(t *testing.T) {
+	// End-to-end check that POST /v1/runs threads budget_per_agent_usd
+	// from the request body all the way down to the agent loop. Sized
+	// so the first canned response alone blows past the budget.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	mustWrite(t, filepath.Join(personasDir, "monsterhunters", "wendigo-watcher.yaml"), `name: Wendigo Watcher
+description: Looks for big footprints in the snow.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "call_overspend", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  1_000_000,
+					OutputTokens: 1_000_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Wrapping up. The Wendigo eluded me."},
+				StopReason: "end",
+				Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+			},
+		},
+	}
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		Cost:            cost.LoadDefaults(),
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"monsterhunters","budget_per_agent_usd":0.01}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	stream, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read SSE: %v", err)
+	}
+	if !strings.Contains(string(stream), `"stop_reason":"budget_exhausted"`) {
+		t.Errorf("expected SSE stream to carry stop_reason=budget_exhausted, got:\n%s", stream)
 	}
 }
 
