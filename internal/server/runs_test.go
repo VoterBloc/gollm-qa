@@ -96,6 +96,156 @@ func TestCreateRun_RejectsUnknownPersonaSet(t *testing.T) {
 	}
 }
 
+func TestCreateRun_AcceptsSingletonPersonaFile(t *testing.T) {
+	// `personas/jake-morrison.yaml` (a single file, not a directory)
+	// should resolve as a one-element set. Mirrors how /v1/personas
+	// already lists both files and collections side by side, so the
+	// run resolver shouldn't refuse the file kind.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustWrite(t, filepath.Join(personasDir, "jake-morrison.yaml"), `name: Jake Morrison
+description: Solo cryptozoologist running a one-person bloc.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Done."}, StopReason: "end"},
+		},
+	}
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"jake-morrison"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	stream, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read SSE: %v", err)
+	}
+	streamStr := string(stream)
+	// run_start payload should report 1 agent — proves the file
+	// resolved as a singleton set rather than 400'ing.
+	if !strings.Contains(streamStr, `"agents":1`) {
+		t.Errorf("expected run_start to report 1 agent, got:\n%s", streamStr)
+	}
+	if !strings.Contains(streamStr, `"persona":"Jake Morrison"`) {
+		t.Errorf("expected per-agent events tagged Jake Morrison, got:\n%s", streamStr)
+	}
+}
+
+func TestCreateRun_AcceptsSingletonPersonaYmlExtension(t *testing.T) {
+	// .yml is also accepted (matches LoadPersonas which already
+	// reads both .yaml and .yml from collection dirs).
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustWrite(t, filepath.Join(personasDir, "marcus-reed.yml"), `name: Marcus Reed
+description: Casual yowie-watcher.
+goals:
+  - Look around
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Done."}, StopReason: "end"},
+		},
+	}
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"marcus-reed"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	stream, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(stream), `"agents":1`) {
+		t.Errorf("expected run_start to report 1 agent for .yml file, got:\n%s", stream)
+	}
+}
+
+func TestCreateRun_CollectionWinsOnAmbiguity(t *testing.T) {
+	// Both `personas/diane-kowalski/` (a directory with two YAMLs)
+	// and `personas/diane-kowalski.yaml` (a stray file) exist.
+	// The collection should win — issue #49's acceptance criterion.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "diane-kowalski"))
+	mustWrite(t, filepath.Join(personasDir, "diane-kowalski", "alpha.yaml"), `name: Diane Alpha
+goals: [Look around]
+behavior: lurker
+`)
+	mustWrite(t, filepath.Join(personasDir, "diane-kowalski", "beta.yaml"), `name: Diane Beta
+goals: [Look around]
+behavior: lurker
+`)
+	mustWrite(t, filepath.Join(personasDir, "diane-kowalski.yaml"), `name: Diane Singleton (should be ignored)
+goals: [Look around]
+behavior: lurker
+`)
+
+	prov := &stubProvider{
+		responses: []*provider.Response{
+			{Message: provider.Message{Role: provider.RoleAssistant, Content: "Done."}, StopReason: "end"},
+		},
+	}
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"diane-kowalski"}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	stream, _ := io.ReadAll(resp.Body)
+	streamStr := string(stream)
+	if !strings.Contains(streamStr, `"agents":2`) {
+		t.Errorf("expected run_start agents=2 (collection wins), got:\n%s", streamStr)
+	}
+	if strings.Contains(streamStr, "Singleton (should be ignored)") {
+		t.Errorf("singleton file was used despite collection existing:\n%s", streamStr)
+	}
+}
+
 func TestCreateRun_RejectsEmptyPersonaCollection(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "ghost-watch.yaml"), validAppConfigYAML())
