@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"google.golang.org/genai"
 
@@ -72,7 +73,6 @@ func WithBaseURL(url string) Option {
 // Gemini implements provider.Provider against the Gemini API.
 type Gemini struct {
 	client    *genai.Client
-	initErr   error // captured at New() time; surfaced from Chat
 	model     string
 	modelSpec string // "gemini:<alias>" — populates Usage.ModelID
 	maxTokens int32
@@ -84,25 +84,25 @@ type Gemini struct {
 // you need a non-default model — that path keeps modelSpec aligned
 // with the actual model so Usage.ModelID stays truthful.
 //
-// genai.NewClient takes a context, but for the Gemini API backend
-// (the default) it doesn't actually do any RPCs — it just validates
-// config. We pass context.Background() and stash any init error to
-// surface from the first Chat call rather than threading errors
-// through New (which would break parity with the claude / openai
-// providers' constructor shape).
-func New(opts ...Option) *Gemini {
+// Unlike the claude / openai constructors (whose SDK setup is pure
+// object construction), genai.NewClient can fail on bad config —
+// New surfaces that error to the caller rather than stashing it
+// for the first Chat call to discover.
+func New(opts ...Option) (*Gemini, error) {
 	cfg := &genai.ClientConfig{Backend: genai.BackendGeminiAPI}
 	for _, o := range opts {
 		o(cfg)
 	}
 	client, err := genai.NewClient(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("gemini client init: %w", err)
+	}
 	return &Gemini{
 		client:    client,
-		initErr:   err,
 		model:     DefaultModel,
 		modelSpec: providerPrefix + ":" + defaultModelAlias,
 		maxTokens: defaultMaxOutputTokens,
-	}
+	}, nil
 }
 
 // NewFromSpec creates a Gemini provider for the given model alias
@@ -114,7 +114,10 @@ func NewFromSpec(modelName string, opts ...Option) (*Gemini, error) {
 	if modelName == "" {
 		return nil, fmt.Errorf("gemini: empty model name")
 	}
-	g := New(opts...)
+	g, err := New(opts...)
+	if err != nil {
+		return nil, err
+	}
 	g.model = resolveModel(modelName)
 	g.modelSpec = providerPrefix + ":" + modelName
 	return g, nil
@@ -129,10 +132,6 @@ func resolveModel(name string) string {
 
 // Chat sends a conversation with tools to Gemini and returns the response.
 func (g *Gemini) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	if g.initErr != nil {
-		return nil, fmt.Errorf("gemini client init: %w", g.initErr)
-	}
-
 	contents, systemInstruction := toSDKContents(messages)
 	cfg := &genai.GenerateContentConfig{
 		MaxOutputTokens: g.maxTokens,
@@ -194,12 +193,17 @@ func toSDKContents(messages []provider.Message) ([]*genai.Content, string) {
 			for _, tc := range msg.ToolCalls {
 				args := map[string]any{}
 				if tc.Arguments != "" {
-					// Best-effort decode; if Arguments isn't JSON we
-					// pass an empty map rather than failing the whole
-					// conversation. The model never produces invalid
-					// JSON args in practice, but conversation replay
-					// from a forwarding layer could.
-					_ = json.Unmarshal([]byte(tc.Arguments), &args)
+					// Best-effort decode. The model never produces
+					// invalid JSON args in practice, but conversation
+					// replay from a forwarding layer could. Log so a
+					// misbehaving upstream surfaces somewhere; pass an
+					// empty map rather than failing the whole
+					// conversation (the model has enough context from
+					// the function name + prior turns to recover).
+					if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+						slog.Default().Warn("gemini: ignoring malformed tool-call arguments",
+							"tool", tc.Name, "id", tc.ID, "error", err)
+					}
 				}
 				parts = append(parts, &genai.Part{
 					FunctionCall: &genai.FunctionCall{
@@ -267,7 +271,15 @@ func fromSDKResponse(resp *genai.GenerateContentResponse) *provider.Response {
 
 	if resp.UsageMetadata != nil {
 		result.Usage.InputTokens = int(resp.UsageMetadata.PromptTokenCount)
-		result.Usage.OutputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		// CandidatesTokenCount alone undercounts on thinking-enabled
+		// models (Gemini 2.5 Pro / Flash) — the model bills for
+		// reasoning tokens separately under ThoughtsTokenCount.
+		// Folding both into OutputTokens keeps cost estimates honest
+		// without requiring a richer Usage type yet. CachedInput
+		// (lower-rate context cache) is left in InputTokens at full
+		// rate for now; tracking it separately would need a tiered
+		// cost model — flagged as a follow-up.
+		result.Usage.OutputTokens = int(resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount)
 	}
 
 	if len(resp.Candidates) == 0 {

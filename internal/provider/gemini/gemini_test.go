@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -291,6 +293,91 @@ func TestChat_EndToEnd(t *testing.T) {
 	}
 	if resp.Usage.ModelID != "gemini:2.5-pro" {
 		t.Errorf("expected ModelID 'gemini:2.5-pro', got %q", resp.Usage.ModelID)
+	}
+}
+
+func TestChat_FoldsThinkingTokensIntoOutput(t *testing.T) {
+	// Gemini 2.5 bills thoughts (reasoning tokens) separately from
+	// candidates. The cost engine sees only Usage.OutputTokens, so
+	// thoughts have to fold in there for honest estimates.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := map[string]any{
+			"candidates": []map[string]any{
+				{
+					"content": map[string]any{
+						"role":  "model",
+						"parts": []map[string]any{{"text": "Done."}},
+					},
+					"finishReason": "STOP",
+				},
+			},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":     100,
+				"candidatesTokenCount": 20,
+				"thoughtsTokenCount":   80,
+				"totalTokenCount":      200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	g, err := NewFromSpec("2.5-pro", WithBaseURL(server.URL), WithAPIKey("sk-fake-key"))
+	if err != nil {
+		t.Fatalf("NewFromSpec: %v", err)
+	}
+
+	out, err := g.Chat(context.Background(), []provider.Message{
+		{Role: provider.RoleUser, Content: "Think hard."},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	if out.Usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", out.Usage.InputTokens)
+	}
+	// 20 candidates + 80 thoughts = 100 billable output.
+	if out.Usage.OutputTokens != 100 {
+		t.Errorf("OutputTokens = %d, want 100 (candidates + thoughts)", out.Usage.OutputTokens)
+	}
+}
+
+func TestToSDKContents_LogsMalformedToolArgs(t *testing.T) {
+	// Conversation replay from a forwarding layer could deliver
+	// malformed JSON in Arguments. We don't fail the conversation —
+	// the model has enough context to recover — but the misbehavior
+	// must surface in logs so an operator can chase the upstream bug.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	messages := []provider.Message{
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_bunyip", Name: "wade_into_billabong", Arguments: `{"depth": NOT_JSON`},
+			},
+		},
+	}
+	contents, _ := toSDKContents(messages)
+
+	// Args should be the empty map fallback.
+	fc := contents[0].Parts[0].FunctionCall
+	if fc == nil {
+		t.Fatal("expected FunctionCall part")
+	}
+	if len(fc.Args) != 0 {
+		t.Errorf("expected empty args map on malformed JSON, got %+v", fc.Args)
+	}
+	// And the warning should have fired.
+	if !strings.Contains(buf.String(), "malformed tool-call arguments") {
+		t.Errorf("expected warning log for malformed arguments, got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "wade_into_billabong") {
+		t.Errorf("warning should name the offending tool, got:\n%s", buf.String())
 	}
 }
 
