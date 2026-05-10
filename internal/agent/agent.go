@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VoterBloc/gollm-qa/internal/cost"
 	"github.com/VoterBloc/gollm-qa/internal/driver"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
@@ -40,6 +41,11 @@ type Config struct {
 	// notable things happen (session start/end, each completed step, UX
 	// observations, errors). See events.go for the full taxonomy.
 	OnEvent EventCallback
+
+	// Cost, if non-nil, is used to populate Session.EstimatedUSD at end
+	// of run. Nil leaves the field zero — useful in tests, or when cost
+	// accounting is irrelevant (local-model runs, fixtures).
+	Cost *cost.Table
 }
 
 // emit calls OnEvent if it's set. Stamping At inside this helper keeps
@@ -186,6 +192,12 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		session.TokensIn += resp.Usage.InputTokens
 		session.TokensOut += resp.Usage.OutputTokens
+		if resp.Usage.ModelID != "" {
+			// Provider stamps the same id on every response in a session;
+			// last-write-wins is fine and handles the empty-first-response
+			// edge case (e.g. provider error before metadata is populated).
+			session.ModelID = resp.Usage.ModelID
+		}
 		session.Steps = step
 
 		messages = append(messages, resp.Message)
@@ -248,6 +260,14 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 	if session.StopReason == "" {
 		session.StopReason = "step_limit"
+	}
+
+	if a.config.Cost != nil {
+		session.EstimatedUSD = a.config.Cost.Estimate(provider.Usage{
+			InputTokens:  session.TokensIn,
+			OutputTokens: session.TokensOut,
+			ModelID:      session.ModelID,
+		})
 	}
 
 	session.EndedAt = time.Now()

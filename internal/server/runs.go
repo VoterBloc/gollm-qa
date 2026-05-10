@@ -222,6 +222,7 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			drv := drvFn(appCfg, s.logger)
 			cfg := agent.Config{
 				MaxSteps: maxSteps,
+				Cost:     s.cfg.Cost,
 				OnEvent: func(ev agent.Event) {
 					sse.write(RunEvent{Persona: p.Name, Event: ev})
 				},

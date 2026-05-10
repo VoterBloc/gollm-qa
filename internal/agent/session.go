@@ -4,17 +4,24 @@ import "time"
 
 // Session records everything that happens during an agent's run.
 type Session struct {
-	AgentName string        `json:"agent_name"`
-	StartedAt time.Time     `json:"started_at"`
-	EndedAt   time.Time     `json:"ended_at,omitempty"`
-	Goals     []GoalResult  `json:"goals"`
-	Actions   []Action      `json:"actions"`
-	Errors    []AgentError  `json:"errors,omitempty"`
-	UXNotes   []UXNote      `json:"ux_notes,omitempty"`
-	TokensIn  int           `json:"tokens_in"`
-	TokensOut int           `json:"tokens_out"`
-	Steps     int           `json:"steps"`
-	StopReason string       `json:"stop_reason"` // "goals_complete", "step_limit", "error", "context_limit"
+	AgentName    string       `json:"agent_name"`
+	StartedAt    time.Time    `json:"started_at"`
+	EndedAt      time.Time    `json:"ended_at,omitempty"`
+	Goals        []GoalResult `json:"goals"`
+	Actions      []Action     `json:"actions"`
+	Errors       []AgentError `json:"errors,omitempty"`
+	UXNotes      []UXNote     `json:"ux_notes,omitempty"`
+	TokensIn     int          `json:"tokens_in"`
+	TokensOut    int          `json:"tokens_out"`
+	// ModelID is the "<provider>:<model>" spec stamped from each
+	// Usage.ModelID, last-write-wins. Today providers stamp a single id
+	// per session so this is stable in practice; if a future routing
+	// scheme switches models mid-run, downstream consumers should treat
+	// this as "the last model used" rather than a session invariant.
+	ModelID      string       `json:"model_id,omitempty"`
+	EstimatedUSD float64      `json:"estimated_usd,omitempty"` // populated when Config.Cost is set
+	Steps        int          `json:"steps"`
+	StopReason   string       `json:"stop_reason"` // "goals_complete", "step_limit", "error", "context_limit"
 }
 
 // GoalResult tracks whether a goal was achieved.
