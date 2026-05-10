@@ -13,7 +13,7 @@ func TestSummarizeRun_AggregatesCorrectly(t *testing.T) {
 		{TokensIn: 250_000, TokensOut: 75_000, EstimatedUSD: 1.875, StopReason: StopReasonStepLimit},
 	}
 
-	got := SummarizeRun(sessions)
+	got := SummarizeRun(sessions, 0, 0)
 
 	if got.Agents != 4 {
 		t.Errorf("Agents = %d, want 4", got.Agents)
@@ -45,9 +45,64 @@ func TestSummarizeRun_AggregatesCorrectly(t *testing.T) {
 }
 
 func TestSummarizeRun_EmptyInput(t *testing.T) {
-	got := SummarizeRun(nil)
+	got := SummarizeRun(nil, 0, 0)
 	if got.Agents != 0 || got.EstimatedUSD != 0 || len(got.StopReasons) != 0 {
 		t.Errorf("empty input should yield zero summary, got %+v", got)
+	}
+}
+
+func TestSummarizeRun_CountsSkippedAndErrored(t *testing.T) {
+	// 3 completed agents in `sessions`, plus 2 skipped (run-level cap)
+	// and 1 errored (Run() returned err). Agents reflects the request's
+	// original total, not just what produced sessions.
+	sessions := []*Session{
+		{StopReason: StopReasonGoalsComplete},
+		{StopReason: StopReasonGoalsComplete},
+		{StopReason: StopReasonStepLimit},
+	}
+
+	got := SummarizeRun(sessions, 2, 1)
+
+	if got.Agents != 6 {
+		t.Errorf("Agents = %d, want 6 (3 sessions + 2 skipped + 1 errored)", got.Agents)
+	}
+	if got.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2", got.Skipped)
+	}
+	if got.Errored != 1 {
+		t.Errorf("Errored = %d, want 1", got.Errored)
+	}
+	if got.Completed != 2 {
+		t.Errorf("Completed = %d, want 2", got.Completed)
+	}
+}
+
+func TestRunSummary_FormatOmitsZeroSkippedAndErrored(t *testing.T) {
+	// Common case: nothing skipped or errored. The Format output
+	// should NOT mention "0 skipped, 0 errored" — clutters the line.
+	sessions := []*Session{
+		{StopReason: StopReasonGoalsComplete},
+		{StopReason: StopReasonGoalsComplete},
+	}
+	out := SummarizeRun(sessions, 0, 0).Format()
+	if strings.Contains(out, "skipped") {
+		t.Errorf("Format should omit 'skipped' when zero, got:\n%s", out)
+	}
+	if strings.Contains(out, "errored") {
+		t.Errorf("Format should omit 'errored' when zero, got:\n%s", out)
+	}
+}
+
+func TestRunSummary_FormatShowsNonzeroSkippedAndErrored(t *testing.T) {
+	sessions := []*Session{
+		{StopReason: StopReasonGoalsComplete},
+	}
+	out := SummarizeRun(sessions, 3, 1).Format()
+	if !strings.Contains(out, "3 skipped") {
+		t.Errorf("Format should show '3 skipped', got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 errored") {
+		t.Errorf("Format should show '1 errored', got:\n%s", out)
 	}
 }
 
@@ -81,7 +136,7 @@ func TestRunSummary_FormatMatchesIssueShape(t *testing.T) {
 		StopReason: StopReasonGoalsComplete,
 	}
 
-	out := SummarizeRun(sessions).Format()
+	out := SummarizeRun(sessions, 0, 0).Format()
 
 	for _, want := range []string{
 		"Run summary",
@@ -111,7 +166,9 @@ func TestFormatTokens(t *testing.T) {
 		{999, "999"},
 		{1_000, "1K"},
 		{180_000, "180K"},
-		{999_999, "1000K"}, // rounds via %.0fK before crossing the M boundary
+		{949_999, "950K"}, // just below the M boundary
+		{950_000, "0.9M"}, // %.1f banker-rounds 0.95 → 0.9
+		{999_999, "1.0M"}, // would otherwise render as "1000K" — that was the foot-gun
 		{1_000_000, "1.0M"},
 		{4_200_000, "4.2M"},
 	}

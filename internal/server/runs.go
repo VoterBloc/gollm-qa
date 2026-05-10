@@ -141,6 +141,16 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Budget enforcement requires a pricing table — without one we
+	// can't estimate cost, so the budget would silently no-op. Surface
+	// that mismatch as a 400 here rather than at the boundary where
+	// the user discovers their cap didn't fire.
+	if (req.BudgetPerAgentUSD > 0 || req.MaxRunCostUSD > 0) && s.cfg.Cost == nil {
+		writeError(w, http.StatusBadRequest, errors.New(
+			"budget enforcement (budget_per_agent_usd / max_run_cost_usd) requires a pricing table; restart the server with --pricing"))
+		return
+	}
+
 	// Resolve and validate the model spec before opening the SSE stream.
 	// An unknown prefix here should land as a clean 400, not as a mid-stream
 	// run_error after the client has already committed to a long-poll.
@@ -194,11 +204,11 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sessions := s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), req.BudgetPerAgentUSD, req.MaxRunCostUSD, llm, sse)
+	res := s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), req.BudgetPerAgentUSD, req.MaxRunCostUSD, llm, sse)
 	sse.write(RunEvent{Event: agent.Event{
 		Kind:    runEventEnd,
 		At:      time.Now(),
-		Payload: agent.SummarizeRun(sessions),
+		Payload: agent.SummarizeRun(res.Sessions, res.Skipped, res.Errored),
 	}})
 }
 
@@ -223,10 +233,21 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 	return nil
 }
 
+// runResult bundles everything the caller needs to roll a run_end
+// summary: completed sessions plus the orchestrator-level counts of
+// agents that never produced one (skipped by the run-level cap; or
+// returned an error from Run()).
+type runResult struct {
+	Sessions []*agent.Session
+	Skipped  int
+	Errored  int
+}
+
 // runAgents fans out personas across goroutines (bounded concurrency),
 // each writing events to the shared SSE stream via the persona-tagged
-// callback. Returns the completed sessions so the caller can roll a
-// run summary into run_end.
+// callback. Returns the runResult so the caller can roll a complete
+// run summary into run_end (skipped + errored agents have to be
+// counted at this boundary — they never produce a Session).
 //
 // llm is shared across every agent in the run — Anthropic / OpenAI SDK
 // clients are concurrency-safe, and the stubProvider used in tests
@@ -236,7 +257,7 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 // agents get the wrap-up nudge via OnUsage's stop-return, and the
 // fan-out loop stops queuing new agents once the aggregate is crossed.
 // Zero leaves enforcement off — same shape as BudgetPerAgentUSD.
-func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, budgetPerAgent, maxRunCostUSD float64, llm provider.Provider, sse *sseWriter) []*agent.Session {
+func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, budgetPerAgent, maxRunCostUSD float64, llm provider.Provider, sse *sseWriter) runResult {
 	drvFn := s.cfg.DriverFactory
 	if drvFn == nil {
 		drvFn = func(appCfg *config.AppConfig, logger *slog.Logger) driver.Driver {
@@ -264,15 +285,18 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 		return maxRunCostUSD > 0 && aggregateUSD > maxRunCostUSD
 	}
 
-	// Sessions collected for the run_end summary. Append guarded by mu.
+	// Sessions and the errored counter share a mutex — both written
+	// from goroutines, both read once after wg.Wait() returns.
 	var (
 		sessionMu sync.Mutex
 		sessions  []*agent.Session
+		errored   int
 	)
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)
 
+	queued := 0
 	for _, p := range personas {
 		// Pre-launch budget check — skip remaining personas once the
 		// aggregate ceiling has been crossed by already-running agents.
@@ -286,10 +310,15 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			return sessions
+			return runResult{
+				Sessions: sessions,
+				Skipped:  len(personas) - queued,
+				Errored:  errored,
+			}
 		case sem <- struct{}{}:
 		}
 
+		queued++
 		wg.Add(1)
 		go func(p *agent.Persona) {
 			defer wg.Done()
@@ -314,6 +343,9 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 					At:      time.Now(),
 					Payload: map[string]string{"error": err.Error()},
 				}})
+				sessionMu.Lock()
+				errored++
+				sessionMu.Unlock()
 				return
 			}
 			sessionMu.Lock()
@@ -323,7 +355,11 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 	}
 
 	wg.Wait()
-	return sessions
+	return runResult{
+		Sessions: sessions,
+		Skipped:  len(personas) - queued,
+		Errored:  errored,
+	}
 }
 
 // sseWriter serializes writes to the response — multiple agents may

@@ -9,25 +9,38 @@ import (
 // RunSummary aggregates state across a multi-agent run for both human
 // (CLI summary line) and machine (HTTP run_end payload) consumers.
 //
-// Built from a slice of completed *Session — same shape on both paths
-// so the two surfaces report identical numbers without re-deriving.
+// Built from a slice of completed *Session plus the orchestrator's
+// running counts of skipped and errored agents — the latter two
+// agents never produce a Session (skipped by the run-level cap, or
+// the agent loop returned an error and bailed), so they have to be
+// counted at the orchestrator boundary where the original persona
+// count is in scope.
+//
+// Agents is the total agents the request asked for: len(sessions) +
+// skipped + errored. A panel rendering "27 of 30 completed" reads
+// Completed against Agents directly without re-derivation.
 type RunSummary struct {
-	Agents       int            `json:"agents"`
-	Completed    int            `json:"completed"`
-	StoppedOnBudget int         `json:"stopped_on_budget"`
-	TokensIn     int            `json:"tokens_in"`
-	TokensOut    int            `json:"tokens_out"`
-	EstimatedUSD float64        `json:"estimated_usd"`
-	StopReasons  map[string]int `json:"stop_reasons"`
+	Agents          int            `json:"agents"`
+	Completed       int            `json:"completed"`
+	StoppedOnBudget int            `json:"stopped_on_budget"`
+	Skipped         int            `json:"skipped"`
+	Errored         int            `json:"errored"`
+	TokensIn        int            `json:"tokens_in"`
+	TokensOut       int            `json:"tokens_out"`
+	EstimatedUSD    float64        `json:"estimated_usd"`
+	StopReasons     map[string]int `json:"stop_reasons"`
 }
 
-// SummarizeRun rolls a slice of completed sessions into a single summary.
-// "Completed" counts agents whose stop reason is goals_complete (the
-// happy path); "stopped on budget" counts both per-agent and run-level
-// budget exits since they share StopReasonBudgetExhausted.
-func SummarizeRun(sessions []*Session) RunSummary {
+// SummarizeRun rolls completed sessions plus the orchestrator's
+// skipped/errored counts into a single summary. "Completed" counts
+// agents whose stop reason is goals_complete (the happy path);
+// "stopped on budget" counts both per-agent and run-level budget
+// exits since they share StopReasonBudgetExhausted.
+func SummarizeRun(sessions []*Session, skipped, errored int) RunSummary {
 	out := RunSummary{
-		Agents:      len(sessions),
+		Agents:      len(sessions) + skipped + errored,
+		Skipped:     skipped,
+		Errored:     errored,
 		StopReasons: make(map[string]int, len(sessions)),
 	}
 	for _, s := range sessions {
@@ -47,12 +60,23 @@ func SummarizeRun(sessions []*Session) RunSummary {
 
 // Format renders the summary as the CLI-friendly multi-line block.
 // Same shape as the example in issue #37 so output matches the spec
-// users read before running.
+// users read before running. Skipped / errored counts are only
+// rendered when non-zero — most runs don't have either, and the
+// extra parentheticals just clutter the common case.
 func (s RunSummary) Format() string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "Run summary")
-	fmt.Fprintf(&b, "  Agents: %d (%d completed, %d stopped on budget)\n",
-		s.Agents, s.Completed, s.StoppedOnBudget)
+	parts := []string{
+		fmt.Sprintf("%d completed", s.Completed),
+		fmt.Sprintf("%d stopped on budget", s.StoppedOnBudget),
+	}
+	if s.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", s.Skipped))
+	}
+	if s.Errored > 0 {
+		parts = append(parts, fmt.Sprintf("%d errored", s.Errored))
+	}
+	fmt.Fprintf(&b, "  Agents: %d (%s)\n", s.Agents, strings.Join(parts, ", "))
 	fmt.Fprintf(&b, "  Tokens: %s input, %s output\n",
 		formatTokens(s.TokensIn), formatTokens(s.TokensOut))
 	fmt.Fprintf(&b, "  Estimated cost: $%.2f\n", s.EstimatedUSD)
@@ -62,9 +86,14 @@ func (s RunSummary) Format() string {
 
 // formatTokens shortens large counts the way operators read them in
 // dashboards: 4_200_000 -> "4.2M", 180_000 -> "180K", 42 -> "42".
+//
+// The M boundary fires at 950_000 rather than 1_000_000 so values
+// like 999_999 don't render as "1000K" — once a number's about to
+// round to 1000K it reads cleaner as "1.0M" and matches what an
+// operator would mentally call it.
 func formatTokens(n int) string {
 	switch {
-	case n >= 1_000_000:
+	case n >= 950_000:
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	case n >= 1_000:
 		return fmt.Sprintf("%.0fK", float64(n)/1_000)

@@ -455,6 +455,43 @@ behavior: lurker
 	}
 }
 
+func TestCreateRun_RejectsBudgetWithoutPricing(t *testing.T) {
+	// Asking for budget enforcement against a server that has no
+	// pricing table should land as a clean 400. Silent disable is
+	// the wrong default for "I asked for it but you can't deliver."
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{
+		ConfigsDir:  configsDir,
+		PersonasDir: personasDir,
+		// Cost intentionally nil — the failure mode under test.
+	})
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"per-agent only", `{"config_name":"lochness","persona_set":"okay","budget_per_agent_usd":0.05}`},
+		{"max-run only", `{"config_name":"lochness","persona_set":"okay","max_run_cost_usd":1.00}`},
+		{"both set", `{"config_name":"lochness","persona_set":"okay","budget_per_agent_usd":0.05,"max_run_cost_usd":1.00}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body: %s)", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "pricing table") {
+				t.Errorf("body should mention pricing table, got %s", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestCreateRun_MaxRunCostTriggersAggregateExhaustion(t *testing.T) {
 	// Two personas, each with a tool-call-then-text response pattern.
 	// First persona's first turn alone should blow the $0.05 aggregate

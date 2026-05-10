@@ -211,10 +211,12 @@ func runCmd(args []string) error {
 
 	var mu sync.Mutex
 	var sessions []*agent.Session
+	var errored int // agents whose Run() returned an error and bailed
 
 	fmt.Fprintf(os.Stderr, "\nStarting %d agents against %s (concurrency: %d, max steps: %d)\n\n",
 		len(personas), appCfg.Name, concurrency, maxSteps)
 
+	queued := 0
 	for _, p := range personas {
 		// Pre-launch check — once the aggregate ceiling is crossed,
 		// stop queuing new agents. errgroup.SetLimit blocks Go() while
@@ -225,6 +227,7 @@ func runCmd(args []string) error {
 				"max_run_cost_usd", maxRunCostUSD)
 			break
 		}
+		queued++
 		g.Go(func() error {
 			drv := apidriver.New(appCfg, logger)
 			a := agent.New(p, llm, drv, agentCfg, logger)
@@ -232,6 +235,9 @@ func runCmd(args []string) error {
 			session, err := a.Run(ctx)
 			if err != nil {
 				logger.Error("agent failed", "agent", p.Name, "error", err)
+				mu.Lock()
+				errored++
+				mu.Unlock()
 				return nil
 			}
 
@@ -249,6 +255,7 @@ func runCmd(args []string) error {
 			return nil
 		})
 	}
+	skipped := len(personas) - queued
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("running agents: %w", err)
@@ -273,7 +280,7 @@ func runCmd(args []string) error {
 	}
 
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprint(os.Stderr, agent.SummarizeRun(sessions).Format())
+	fmt.Fprint(os.Stderr, agent.SummarizeRun(sessions, skipped, errored).Format())
 	fmt.Fprintf(os.Stderr, "  Actions: %d, Errors: %d, UX notes: %d\n", totalActions, totalErrors, totalUXNotes)
 	fmt.Fprintf(os.Stderr, "  Reports: %s/\n", outputDir)
 
