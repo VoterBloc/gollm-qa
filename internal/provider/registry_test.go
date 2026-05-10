@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/VoterBloc/gollm-qa/internal/provider"
@@ -21,14 +20,19 @@ func (s *stubProvider) Chat(_ context.Context, _ []provider.Message, _ []provide
 	return &provider.Response{Usage: provider.Usage{ModelID: "stub:" + s.model}}, nil
 }
 
-// guard against parallel tests stomping each other when they Register —
-// the registry is a process-global singleton.
-var registerMu sync.Mutex
+// registerForTest registers a unique-to-this-test prefix and queues
+// cleanup so the entry doesn't survive into the next test (or the next
+// `go test -count=N` iteration). The registry is a process-global
+// singleton — without cleanup, a re-run would panic on duplicate
+// registration.
+func registerForTest(t *testing.T, prefix string, f provider.Factory) {
+	t.Helper()
+	provider.Register(prefix, f)
+	t.Cleanup(func() { provider.UnregisterForTest(prefix) })
+}
 
 func TestNew_RoutesByPrefix(t *testing.T) {
-	registerMu.Lock()
-	defer registerMu.Unlock()
-	provider.Register("bigfoot", func(model string) (provider.Provider, error) {
+	registerForTest(t, "bigfoot", func(model string) (provider.Provider, error) {
 		return &stubProvider{model: model}, nil
 	})
 
@@ -82,10 +86,8 @@ func TestNew_UnknownProviderListsRegistered(t *testing.T) {
 }
 
 func TestNew_FactoryErrorPropagates(t *testing.T) {
-	registerMu.Lock()
-	defer registerMu.Unlock()
 	sentinel := errors.New("taco cannon misfire")
-	provider.Register("tacocannon", func(_ string) (provider.Provider, error) {
+	registerForTest(t, "tacocannon", func(_ string) (provider.Provider, error) {
 		return nil, sentinel
 	})
 
@@ -118,9 +120,7 @@ func TestMustNew_PanicsOnUnknownProvider(t *testing.T) {
 }
 
 func TestRegister_DuplicatePanics(t *testing.T) {
-	registerMu.Lock()
-	defer registerMu.Unlock()
-	provider.Register("fishsticks", func(_ string) (provider.Provider, error) {
+	registerForTest(t, "fishsticks", func(_ string) (provider.Provider, error) {
 		return &stubProvider{}, nil
 	})
 	defer func() {

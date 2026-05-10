@@ -17,9 +17,10 @@ import (
 // prefix used to look the provider up.
 const providerPrefix = "claude"
 
-// DefaultModel is the SDK model used when WithModel isn't supplied to New.
-// Pulled out of the constructor body so the default is named and visible
-// to direct callers; the registry path always specifies a model.
+// DefaultModel is the SDK model used when New is called without going
+// through NewFromSpec. Pulled out of the constructor body so the default
+// is named and visible to direct callers; the registry path always
+// specifies a model.
 var DefaultModel = anthropic.ModelClaudeSonnet4_5_20250929
 
 // modelAliases maps short, human-friendly model names to fully-qualified
@@ -44,6 +45,10 @@ func init() {
 	})
 }
 
+// defaultMaxTokens is the per-response output cap. Hardcoded — no caller
+// has needed an override; a future tuning knob can re-introduce the option.
+const defaultMaxTokens = 4096
+
 // Claude implements provider.Provider using the Anthropic Messages API.
 type Claude struct {
 	client    *anthropic.Client
@@ -52,50 +57,20 @@ type Claude struct {
 	maxTokens int64
 }
 
-// Option configures a Claude provider.
-type Option func(*Claude)
-
-// WithModel sets the SDK model to use. Use NewFromSpec instead when you
-// have a "claude:<alias>" spec — that path also populates Usage.ModelID.
-func WithModel(model anthropic.Model) Option {
-	return func(c *Claude) {
-		c.model = model
-	}
-}
-
-// WithMaxTokens sets the maximum tokens per response. Defaults to 4096.
-func WithMaxTokens(n int64) Option {
-	return func(c *Claude) {
-		c.maxTokens = n
-	}
-}
-
-// New creates a Claude provider. By default it reads ANTHROPIC_API_KEY from
-// the environment. Pass option.WithAPIKey to override.
-func New(opts ...any) *Claude {
-	var reqOpts []option.RequestOption
-	var clOpts []Option
-
-	for _, o := range opts {
-		switch v := o.(type) {
-		case option.RequestOption:
-			reqOpts = append(reqOpts, v)
-		case Option:
-			clOpts = append(clOpts, v)
-		}
-	}
-
-	client := anthropic.NewClient(reqOpts...)
-	c := &Claude{
+// New creates a Claude provider on the default model. Reads ANTHROPIC_API_KEY
+// from the environment by default; pass option.WithAPIKey or option.WithBaseURL
+// to override. Use NewFromSpec when you need a non-default model — that path
+// keeps modelSpec aligned with the actual model so Usage.ModelID stays
+// truthful. Selecting a model via direct-mutation here is intentionally not
+// supported.
+func New(opts ...option.RequestOption) *Claude {
+	client := anthropic.NewClient(opts...)
+	return &Claude{
 		client:    &client,
 		model:     DefaultModel,
 		modelSpec: providerPrefix + ":" + defaultModelAlias,
-		maxTokens: 4096,
+		maxTokens: defaultMaxTokens,
 	}
-	for _, o := range clOpts {
-		o(c)
-	}
-	return c
 }
 
 // NewFromSpec creates a Claude provider for the given model alias (the
@@ -106,7 +81,7 @@ func NewFromSpec(modelName string, opts ...option.RequestOption) (*Claude, error
 	if modelName == "" {
 		return nil, fmt.Errorf("claude: empty model name")
 	}
-	c := New(toAnyOpts(opts)...)
+	c := New(opts...)
 	c.model = resolveModel(modelName)
 	c.modelSpec = providerPrefix + ":" + modelName
 	return c, nil
@@ -117,14 +92,6 @@ func resolveModel(name string) anthropic.Model {
 		return m
 	}
 	return anthropic.Model(name)
-}
-
-func toAnyOpts(reqOpts []option.RequestOption) []any {
-	out := make([]any, len(reqOpts))
-	for i, o := range reqOpts {
-		out[i] = o
-	}
-	return out
 }
 
 // Chat sends a conversation with tools to Claude and returns the response.

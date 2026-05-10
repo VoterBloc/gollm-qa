@@ -199,6 +199,11 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 		}
 	}
 
+	// One provider instance shared across agents — Anthropic SDK clients
+	// are concurrency-safe, and tests inject providers (stubProvider in
+	// runs_test.go) that are also safe for concurrent Chat calls.
+	llm := provFn()
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)
 
@@ -215,7 +220,6 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 			defer func() { <-sem }()
 
 			drv := drvFn(appCfg, s.logger)
-			llm := provFn()
 			cfg := agent.Config{
 				MaxSteps: maxSteps,
 				OnEvent: func(ev agent.Event) {
