@@ -8,6 +8,7 @@ import (
 
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // exercise the real registration
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // exercise the real registration
 )
 
 // stubProvider is a no-op Provider used to verify registry plumbing
@@ -104,6 +105,20 @@ func TestDefaultModelSpec_Resolves(t *testing.T) {
 	p, err := provider.New(provider.DefaultModelSpec)
 	if err != nil {
 		t.Fatalf("New(DefaultModelSpec=%q): %v", provider.DefaultModelSpec, err)
+	}
+	if p == nil {
+		t.Fatal("New returned nil provider")
+	}
+}
+
+func TestNew_OpenAISpecResolves(t *testing.T) {
+	// Pinned: as long as the openai package is blank-imported at the top
+	// of this file, "openai:gpt-4o" must produce a working provider.
+	// Catches the regression where the openai package's init drifts away
+	// from "openai" or the spec parser stops accepting hyphens in models.
+	p, err := provider.New("openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("New(\"openai:gpt-4o\"): %v", err)
 	}
 	if p == nil {
 		t.Fatal("New returned nil provider")

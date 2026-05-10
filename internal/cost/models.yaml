@@ -12,3 +12,16 @@ providers:
     sonnet-4-5:
       input_per_million_usd: 3.00
       output_per_million_usd: 15.00
+  openai:
+    # `openai:gpt-4o` and `openai:gpt-4o-mini` map to OpenAI's floating
+    # aliases — the dated snapshot they resolve to changes when OpenAI
+    # repoints the alias. These USD/M numbers track the snapshot in
+    # effect at the time of the last update; if you need pricing pinned
+    # to a specific snapshot, override here with the dated id (e.g.
+    # gpt-4o-2024-08-06) and use that as the spec suffix.
+    gpt-4o:
+      input_per_million_usd: 2.50
+      output_per_million_usd: 10.00
+    gpt-4o-mini:
+      input_per_million_usd: 0.15
+      output_per_million_usd: 0.60
