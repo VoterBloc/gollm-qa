@@ -8,6 +8,7 @@ import (
 
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // exercise the real registration
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/gemini" // exercise the real registration
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // exercise the real registration
 )
 
@@ -119,6 +120,23 @@ func TestNew_OpenAISpecResolves(t *testing.T) {
 	p, err := provider.New("openai:gpt-4o")
 	if err != nil {
 		t.Fatalf("New(\"openai:gpt-4o\"): %v", err)
+	}
+	if p == nil {
+		t.Fatal("New returned nil provider")
+	}
+}
+
+func TestNew_GeminiSpecResolves(t *testing.T) {
+	// Unlike the anthropic / openai SDKs which validate credentials
+	// at first-request time, google.golang.org/genai validates at
+	// client construction. The registry probe just wants to confirm
+	// the prefix is wired — supply a fake key via env so NewClient
+	// doesn't reject before we get to the registration check.
+	t.Setenv("GEMINI_API_KEY", "sk-fake-test-key")
+
+	p, err := provider.New("gemini:2.5-pro")
+	if err != nil {
+		t.Fatalf("New(\"gemini:2.5-pro\"): %v", err)
 	}
 	if p == nil {
 		t.Fatal("New returned nil provider")
