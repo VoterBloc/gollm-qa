@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
+	"github.com/VoterBloc/gollm-qa/internal/cost"
 	"github.com/VoterBloc/gollm-qa/internal/driver"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
@@ -899,4 +901,66 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestAgent_PopulatesEstimatedUSDFromCostTable(t *testing.T) {
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "All set."},
+				StopReason: "end",
+				Usage: provider.Usage{
+					InputTokens:  500_000,
+					OutputTokens: 100_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.ModelID != "claude:sonnet-4-5" {
+		t.Errorf("expected ModelID stamped on session, got %q", session.ModelID)
+	}
+	// 500k * $3/M + 100k * $15/M = $1.50 + $1.50 = $3.00.
+	if math.Abs(session.EstimatedUSD-3.00) > 1e-9 {
+		t.Errorf("EstimatedUSD = %v, want 3.00", session.EstimatedUSD)
+	}
+}
+
+func TestAgent_NilCostTableLeavesEstimateZero(t *testing.T) {
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done."},
+				StopReason: "end",
+				Usage: provider.Usage{
+					InputTokens:  10_000,
+					OutputTokens: 2_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), DefaultConfig(), nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.EstimatedUSD != 0 {
+		t.Errorf("expected EstimatedUSD = 0 when Config.Cost is nil, got %v", session.EstimatedUSD)
+	}
+	if session.ModelID != "claude:sonnet-4-5" {
+		t.Errorf("ModelID should be stamped regardless of cost wiring, got %q", session.ModelID)
+	}
 }

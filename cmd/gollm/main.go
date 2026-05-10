@@ -18,6 +18,7 @@ import (
 
 	"github.com/VoterBloc/gollm-qa/internal/agent"
 	"github.com/VoterBloc/gollm-qa/internal/config"
+	"github.com/VoterBloc/gollm-qa/internal/cost"
 	apidriver "github.com/VoterBloc/gollm-qa/internal/driver/api"
 	"github.com/VoterBloc/gollm-qa/internal/introspect"
 	"github.com/VoterBloc/gollm-qa/internal/persona"
@@ -93,6 +94,7 @@ func runCmd(args []string) error {
 		maxSteps    int
 		concurrency int
 		stepDelay   time.Duration
+		pricingPath string
 	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
 	fs.StringVar(&personaDir, "personas", "", "path to persona directory (required)")
@@ -101,6 +103,7 @@ func runCmd(args []string) error {
 	fs.IntVar(&maxSteps, "max-steps", 50, "max steps per agent")
 	fs.IntVar(&concurrency, "concurrency", 3, "max concurrent agents")
 	fs.DurationVar(&stepDelay, "step-delay", 0, "delay between agent steps (e.g. 1s)")
+	fs.StringVar(&pricingPath, "pricing", "", "optional pricing YAML path; merges over the embedded defaults")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -155,9 +158,15 @@ func runCmd(args []string) error {
 		logger.Info("generated tools from schema", "count", len(appCfg.Tools))
 	}
 
+	pricing, err := cost.Load(pricingPath)
+	if err != nil {
+		return fmt.Errorf("loading pricing: %w", err)
+	}
+
 	agentCfg := agent.Config{
 		MaxSteps:  maxSteps,
 		StepDelay: stepDelay,
+		Cost:      pricing,
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -411,11 +420,18 @@ func serveCmd(args []string) error {
 	fs.StringVar(&personasDir, "personas", "personas", "directory containing persona files and collections")
 	fs.StringVar(&clerkIssuer, "clerk-issuer", os.Getenv("COHORT_CLERK_ISSUER"),
 		"Clerk issuer URL (e.g. https://your-app.clerk.accounts.dev). Empty = dev mode, no auth. Also reads from COHORT_CLERK_ISSUER.")
+	var pricingPath string
+	fs.StringVar(&pricingPath, "pricing", "", "optional pricing YAML path; merges over the embedded defaults")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	pricing, err := cost.Load(pricingPath)
+	if err != nil {
+		return fmt.Errorf("loading pricing: %w", err)
+	}
 
 	srv, err := server.New(server.Config{
 		Addr:         addr,
@@ -423,6 +439,7 @@ func serveCmd(args []string) error {
 		CampaignsDir: campaignsDir,
 		PersonasDir:  personasDir,
 		ClerkIssuer:  clerkIssuer,
+		Cost:         pricing,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)

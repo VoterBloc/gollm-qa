@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/VoterBloc/gollm-qa/internal/config"
+	"github.com/VoterBloc/gollm-qa/internal/cost"
 	"github.com/VoterBloc/gollm-qa/internal/driver"
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 )
@@ -42,6 +43,12 @@ type Config struct {
 	// the target application. Nil = default API driver. Tests inject a
 	// stub here to avoid hitting a real GraphQL endpoint.
 	DriverFactory func(*config.AppConfig, *slog.Logger) driver.Driver
+
+	// Cost, if non-nil, populates Session.EstimatedUSD for each agent
+	// run. Nil disables cost estimation — appropriate for tests; the
+	// `gollm serve` entry point loads cost.LoadDefaults() so production
+	// reports always include an estimate.
+	Cost *cost.Table
 }
 
 // Server wraps an http.Server with the gollm-qa routes mounted.

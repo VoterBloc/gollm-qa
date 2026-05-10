@@ -1,0 +1,14 @@
+# Pricing table for cost estimation. Keys match the "<provider>:<model>"
+# spec used by provider.New and stamped onto provider.Usage.ModelID.
+#
+# Override at runtime by passing --pricing <path> to gollm; user values
+# merge over these defaults (per-key replacement, not deep merge).
+#
+# Numbers in USD per million tokens. Update when the provider changes
+# its pricing — the cost package will not fetch live rates.
+
+providers:
+  claude:
+    sonnet-4-5:
+      input_per_million_usd: 3.00
+      output_per_million_usd: 15.00
