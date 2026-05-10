@@ -21,10 +21,9 @@ reports/
 *.out
 coverage.out
 
-# Browser sidecar — out of scope for the API-only image
-browser/node_modules
-browser/dist
-browser/.parcel-cache
+# Browser sidecar — out of scope for the API-only image; whole tree
+# is dead weight in the build context.
+browser/
 
 # Editor / OS noise
 .DS_Store

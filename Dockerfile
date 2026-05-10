@@ -28,13 +28,18 @@ FROM gcr.io/distroless/static:nonroot
 WORKDIR /app
 COPY --from=build /out/gollm /usr/local/bin/gollm
 
-# Bake in the user-content directories at known paths. `gollm serve`
-# defaults --apps / --campaigns / --personas to these relative dirs
-# from WORKDIR, so no flags are needed in CMD. Compose users can
-# bind-mount over them for hot-edit during development.
-COPY apps /app/apps
-COPY campaigns /app/campaigns
-COPY personas /app/personas
+# The image ships data-free: gollm-qa is app-agnostic per CLAUDE.md,
+# so no per-target YAML is baked in. `gollm serve` defaults
+# --apps / --campaigns / --personas to those relative dirs (resolved
+# from WORKDIR /app), so consumers must mount their content there:
+#
+#   docker run -v ./apps:/app/apps -v ./personas:/app/personas \
+#     -v ./campaigns:/app/campaigns -p 8080:8080 gollm-qa
+#
+# Or pass --apps / --personas / --campaigns flags pointing elsewhere.
+# Without mounts the server still boots and /health responds; the
+# read-only listing endpoints just return empty until you mount data
+# or POST runs with inline config/personas.
 
 EXPOSE 8080
 
