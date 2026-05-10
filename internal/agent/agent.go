@@ -61,12 +61,31 @@ type Config struct {
 // because the Claude provider treats system messages as a single
 // up-front prompt — a second system message would clobber the persona
 // prompt, losing context for the wrap-up turn.
-const budgetExhaustedNudge = "Budget exhausted. Stop, summarize what you did, and report any UX observations before exiting. Do not call any more tools."
+//
+// The [ENGINE NOTICE] prefix is a provenance marker: in a session
+// transcript a future operator (or report tool) scanning user-role
+// turns can classify this as "the engine spoke, not the persona"
+// without parsing the wording. The bracket form is intentionally
+// distinct from anything the model would produce on its own.
+const budgetExhaustedNudge = "[ENGINE NOTICE] Budget exhausted. Stop, summarize what you did, and report any UX observations before exiting. Do not call any more tools."
 
-// StopReasonBudgetExhausted is the session.StopReason set when an agent
-// exits because BudgetPerAgentUSD was crossed mid-loop. Exported so
-// reports / dashboards can group by reason without string-matching.
-const StopReasonBudgetExhausted = "budget_exhausted"
+// StopReason* are the values session.StopReason takes when an agent
+// run ends. Exported so reports / dashboards can group by reason
+// without string-matching, and so callers can tell "ran out of budget"
+// from "completed naturally" or "hit step limit" cleanly. Kept as
+// untyped string constants (rather than a typed enum) because the
+// session JSON ships these verbatim and consumers in other languages
+// pattern-match on the string form.
+const (
+	StopReasonGoalsComplete   = "goals_complete"
+	StopReasonStepLimit       = "step_limit"
+	StopReasonContextLimit    = "context_limit"
+	StopReasonError           = "error"
+	StopReasonCancelled       = "cancelled"
+	StopReasonAuthFailed      = "auth_failed"
+	StopReasonRegisterFailed  = "register_failed"
+	StopReasonBudgetExhausted = "budget_exhausted"
+)
 
 // emit calls OnEvent if it's set. Stamping At inside this helper keeps
 // the call sites concise.
@@ -138,7 +157,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 					Message:   fmt.Sprintf("registration failed: %v", err),
 				}
 				session.Errors = append(session.Errors, agentErr)
-				session.StopReason = "register_failed"
+				session.StopReason = StopReasonRegisterFailed
 				session.EndedAt = time.Now()
 				a.emit(EventError, 0, agentErr)
 				a.emit(EventSessionEnd, 0, session)
@@ -158,7 +177,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 				Message:   fmt.Sprintf("authentication failed: %v", err),
 			}
 			session.Errors = append(session.Errors, agentErr)
-			session.StopReason = "auth_failed"
+			session.StopReason = StopReasonAuthFailed
 			session.EndedAt = time.Now()
 			a.emit(EventError, 0, agentErr)
 			a.emit(EventSessionEnd, 0, session)
@@ -169,6 +188,13 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 	tools := a.driver.Tools()
 	tools = append(tools, a.builtinTools()...)
+
+	// On the wrap-up turn, we strip driver tools and offer only the
+	// agent's built-ins (report_ux_observation, mark_goal_complete).
+	// A model that defies the nudge can still report what it did, but
+	// can't fire a destructive driver call (delete_account, post, …)
+	// just because we asked it to summarize.
+	wrapUpTools := a.builtinTools()
 
 	startMessage := "Begin working toward your goals. Use the available tools to interact with the application."
 	if authenticated {
@@ -191,7 +217,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 	for step := 1; step <= a.config.MaxSteps; step++ {
 		if ctx.Err() != nil {
-			session.StopReason = "cancelled"
+			session.StopReason = StopReasonCancelled
 			break
 		}
 
@@ -199,12 +225,16 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			select {
 			case <-time.After(a.config.StepDelay):
 			case <-ctx.Done():
-				session.StopReason = "cancelled"
+				session.StopReason = StopReasonCancelled
 				break
 			}
 		}
 
-		resp, err := a.provider.Chat(ctx, messages, tools)
+		callTools := tools
+		if budgetExhausted {
+			callTools = wrapUpTools
+		}
+		resp, err := a.provider.Chat(ctx, messages, callTools)
 		if err != nil {
 			agentErr := AgentError{
 				Step:      step,
@@ -212,7 +242,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 				Message:   fmt.Sprintf("provider error: %v", err),
 			}
 			session.Errors = append(session.Errors, agentErr)
-			session.StopReason = "error"
+			session.StopReason = StopReasonError
 			a.emit(EventError, step, agentErr)
 			break
 		}
@@ -231,14 +261,16 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		// No tool calls — the model is done talking. If we'd already
 		// issued the budget nudge, this is the wrap-up turn finishing
-		// cleanly; tag accordingly so reports can distinguish "ran out
-		// of budget" from "completed naturally."
+		// cleanly. If the budget was crossed on this turn (single
+		// over-budget text response, no prior nudge), still tag as
+		// budget_exhausted — cost-truthful labeling beats letting an
+		// expensive single-shot completion read as "goals_complete."
 		if len(resp.Message.ToolCalls) == 0 {
 			a.logger.Info("agent finished (no more tool calls)", "step", step)
-			if budgetExhausted {
+			if budgetExhausted || a.budgetCrossed(session) {
 				session.StopReason = StopReasonBudgetExhausted
 			} else {
-				session.StopReason = "goals_complete"
+				session.StopReason = StopReasonGoalsComplete
 			}
 			break
 		}
@@ -287,7 +319,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 
 		if resp.StopReason == "length" {
 			a.logger.Warn("context limit reached", "step", step)
-			session.StopReason = "context_limit"
+			session.StopReason = StopReasonContextLimit
 			break
 		}
 
@@ -321,7 +353,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 	}
 
 	if session.StopReason == "" {
-		session.StopReason = "step_limit"
+		session.StopReason = StopReasonStepLimit
 	}
 
 	if a.config.Cost != nil {

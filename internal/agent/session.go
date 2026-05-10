@@ -21,7 +21,7 @@ type Session struct {
 	ModelID      string       `json:"model_id,omitempty"`
 	EstimatedUSD float64      `json:"estimated_usd,omitempty"` // populated when Config.Cost is set
 	Steps        int          `json:"steps"`
-	StopReason   string       `json:"stop_reason"` // "goals_complete", "step_limit", "error", "context_limit"
+	StopReason   string       `json:"stop_reason"` // see StopReason* constants (goals_complete, step_limit, budget_exhausted, …)
 }
 
 // GoalResult tracks whether a goal was achieved.
