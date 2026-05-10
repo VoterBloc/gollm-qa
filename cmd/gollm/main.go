@@ -98,6 +98,7 @@ func runCmd(args []string) error {
 		pricingPath     string
 		modelSpec       string
 		budgetPerAgent  float64
+		maxRunCostUSD   float64
 	)
 	fs.StringVar(&configPath, "config", "", "path to app config YAML (required)")
 	fs.StringVar(&personaDir, "personas", "", "path to persona directory (required)")
@@ -109,6 +110,7 @@ func runCmd(args []string) error {
 	fs.StringVar(&pricingPath, "pricing", "", "optional pricing YAML path; merges over the embedded defaults")
 	fs.StringVar(&modelSpec, "model", "", "<provider>:<model> spec (e.g. claude:sonnet-4-5, openai:gpt-4o); overrides app config's default_model")
 	fs.Float64Var(&budgetPerAgent, "budget-per-agent", 0, "USD soft ceiling per agent; agent gets one wrap-up turn after crossing. 0 = no limit")
+	fs.Float64Var(&maxRunCostUSD, "max-run-cost-usd", 5, "USD soft ceiling for the entire run; in-flight agents wrap up once the aggregate is exceeded and no new agents start. 0 = no limit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -175,11 +177,33 @@ func runCmd(args []string) error {
 	}
 	logger.Info("using model", "spec", resolvedSpec)
 
+	// Aggregate run-cost tracking. The OnUsage closure feeds every
+	// agent's per-turn cost into a shared counter; once the total
+	// crosses --max-run-cost-usd, returning true triggers each in-flight
+	// agent's wrap-up path. Same flag also gates whether new agents
+	// get queued below.
+	var (
+		runMu        sync.Mutex
+		aggregateUSD float64
+	)
+	overBudget := func() bool {
+		runMu.Lock()
+		defer runMu.Unlock()
+		return maxRunCostUSD > 0 && aggregateUSD > maxRunCostUSD
+	}
+	onUsage := func(turnUSD float64) bool {
+		runMu.Lock()
+		defer runMu.Unlock()
+		aggregateUSD += turnUSD
+		return maxRunCostUSD > 0 && aggregateUSD > maxRunCostUSD
+	}
+
 	agentCfg := agent.Config{
 		MaxSteps:          maxSteps,
 		StepDelay:         stepDelay,
 		Cost:              pricing,
 		BudgetPerAgentUSD: budgetPerAgent,
+		OnUsage:           onUsage,
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -187,11 +211,23 @@ func runCmd(args []string) error {
 
 	var mu sync.Mutex
 	var sessions []*agent.Session
+	var errored int // agents whose Run() returned an error and bailed
 
 	fmt.Fprintf(os.Stderr, "\nStarting %d agents against %s (concurrency: %d, max steps: %d)\n\n",
 		len(personas), appCfg.Name, concurrency, maxSteps)
 
+	queued := 0
 	for _, p := range personas {
+		// Pre-launch check — once the aggregate ceiling is crossed,
+		// stop queuing new agents. errgroup.SetLimit blocks Go() while
+		// the concurrency window is full, so this check sees the
+		// latest aggregate before each new launch.
+		if overBudget() {
+			logger.Info("run budget ceiling reached, skipping remaining agents",
+				"max_run_cost_usd", maxRunCostUSD)
+			break
+		}
+		queued++
 		g.Go(func() error {
 			drv := apidriver.New(appCfg, logger)
 			a := agent.New(p, llm, drv, agentCfg, logger)
@@ -199,6 +235,9 @@ func runCmd(args []string) error {
 			session, err := a.Run(ctx)
 			if err != nil {
 				logger.Error("agent failed", "agent", p.Name, "error", err)
+				mu.Lock()
+				errored++
+				mu.Unlock()
 				return nil
 			}
 
@@ -216,6 +255,7 @@ func runCmd(args []string) error {
 			return nil
 		})
 	}
+	skipped := len(personas) - queued
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("running agents: %w", err)
@@ -239,8 +279,10 @@ func runCmd(args []string) error {
 		totalUXNotes += len(s.UXNotes)
 	}
 
-	fmt.Fprintf(os.Stderr, "\nDone. %d agents, %d actions, %d errors, %d UX notes. Reports in %s/\n",
-		len(sessions), totalActions, totalErrors, totalUXNotes, outputDir)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, agent.SummarizeRun(sessions, skipped, errored).Format())
+	fmt.Fprintf(os.Stderr, "  Actions: %d, Errors: %d, UX notes: %d\n", totalActions, totalErrors, totalUXNotes)
+	fmt.Fprintf(os.Stderr, "  Reports: %s/\n", outputDir)
 
 	return nil
 }

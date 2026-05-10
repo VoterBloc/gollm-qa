@@ -455,6 +455,132 @@ behavior: lurker
 	}
 }
 
+func TestCreateRun_RejectsBudgetWithoutPricing(t *testing.T) {
+	// Asking for budget enforcement against a server that has no
+	// pricing table should land as a clean 400. Silent disable is
+	// the wrong default for "I asked for it but you can't deliver."
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	srv := mustNewServer(t, Config{
+		ConfigsDir:  configsDir,
+		PersonasDir: personasDir,
+		// Cost intentionally nil — the failure mode under test.
+	})
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"per-agent only", `{"config_name":"lochness","persona_set":"okay","budget_per_agent_usd":0.05}`},
+		{"max-run only", `{"config_name":"lochness","persona_set":"okay","max_run_cost_usd":1.00}`},
+		{"both set", `{"config_name":"lochness","persona_set":"okay","budget_per_agent_usd":0.05,"max_run_cost_usd":1.00}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body: %s)", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "pricing table") {
+				t.Errorf("body should mention pricing table, got %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestCreateRun_MaxRunCostTriggersAggregateExhaustion(t *testing.T) {
+	// Two personas, each with a tool-call-then-text response pattern.
+	// First persona's first turn alone should blow the $0.05 aggregate
+	// budget. Both personas should end up with stop_reason=budget_exhausted
+	// (the second one is queued before the cap is hit, but its OnUsage
+	// returns true on its first turn). The run_end event carries a
+	// RunSummary with non-zero stopped_on_budget.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustMkdir(t, filepath.Join(personasDir, "monsterhunters"))
+	for _, name := range []string{"hunter-a.yaml", "hunter-b.yaml"} {
+		mustWrite(t, filepath.Join(personasDir, "monsterhunters", name), `name: `+strings.TrimSuffix(name, ".yaml")+`
+description: Looks for things in the woods.
+goals:
+  - Look around
+behavior: lurker
+`)
+	}
+
+	// Each persona burns through its own canned-response queue. Make
+	// each first turn expensive (1M+1M tokens against claude:sonnet-4-5
+	// = $18) so the very first OnUsage call from each agent crosses
+	// the $0.05 cap.
+	expensive := func() *provider.Response {
+		return &provider.Response{
+			Message: provider.Message{
+				Role: provider.RoleAssistant,
+				ToolCalls: []provider.ToolCall{
+					{ID: "call_burn", Name: "browse_blocs", Arguments: "{}"},
+				},
+			},
+			StopReason: "tool_use",
+			Usage: provider.Usage{
+				InputTokens:  1_000_000,
+				OutputTokens: 1_000_000,
+				ModelID:      "claude:sonnet-4-5",
+			},
+		}
+	}
+	wrapUp := func() *provider.Response {
+		return &provider.Response{
+			Message:    provider.Message{Role: provider.RoleAssistant, Content: "Wrapping up."},
+			StopReason: "end",
+			Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+		}
+	}
+	prov := &stubProvider{
+		responses: []*provider.Response{expensive(), wrapUp(), expensive(), wrapUp()},
+	}
+
+	srv := mustNewServer(t, Config{
+		ConfigsDir:      configsDir,
+		PersonasDir:     personasDir,
+		Cost:            cost.LoadDefaults(),
+		ProviderFactory: func(_ string) (provider.Provider, error) { return prov, nil },
+		DriverFactory: func(_ *config.AppConfig, _ *slog.Logger) driver.Driver {
+			return newStubDriver()
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"config_name":"lochness","persona_set":"monsterhunters","max_run_cost_usd":0.05}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	stream, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read SSE: %v", err)
+	}
+	streamStr := string(stream)
+
+	// At least one agent should have exited on budget.
+	if !strings.Contains(streamStr, `"stop_reason":"budget_exhausted"`) {
+		t.Errorf("expected SSE to contain stop_reason=budget_exhausted, got:\n%s", streamStr)
+	}
+	// run_end payload must carry the summary.
+	if !strings.Contains(streamStr, `"kind":"run_end"`) {
+		t.Errorf("expected run_end event in SSE, got:\n%s", streamStr)
+	}
+	if !strings.Contains(streamStr, `"stopped_on_budget"`) {
+		t.Errorf("run_end payload should include stopped_on_budget, got:\n%s", streamStr)
+	}
+}
+
 func TestCreateRun_BuiltinDefaultUsedWhenNothingSet(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())

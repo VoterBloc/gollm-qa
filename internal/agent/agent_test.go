@@ -1312,6 +1312,97 @@ func toolNames(tools []provider.Tool) []string {
 	return names
 }
 
+func TestAgent_OnUsageTrueTriggersWrapUp(t *testing.T) {
+	// Simulates a run-level ceiling crossed while this agent is mid-run.
+	// First turn fires OnUsage with stop=true; the agent should enter
+	// wrap-up exactly the same way per-agent budget would.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message: provider.Message{
+					Role: provider.RoleAssistant,
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_runlevel", Name: "browse_blocs", Arguments: "{}"},
+					},
+				},
+				StopReason: "tool_use",
+				Usage: provider.Usage{
+					InputTokens:  100,
+					OutputTokens: 50,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Wrapping up — orchestrator says we're over."},
+				StopReason: "end",
+				Usage:      provider.Usage{ModelID: "claude:sonnet-4-5"},
+			},
+		},
+	}
+
+	calls := 0
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.OnUsage = func(_ float64) bool {
+		calls++
+		// Trigger the orchestrator-stop on the first call; let later
+		// calls (the wrap-up turn) report cost without re-triggering.
+		return calls == 1
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	session, err := a.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if session.StopReason != StopReasonBudgetExhausted {
+		t.Errorf("StopReason = %q, want %q", session.StopReason, StopReasonBudgetExhausted)
+	}
+	if calls != 2 {
+		t.Errorf("OnUsage called %d times, want 2 (first turn + wrap-up turn)", calls)
+	}
+}
+
+func TestAgent_OnUsageReceivesPerTurnCost(t *testing.T) {
+	// The orchestrator's accumulator depends on getting the per-turn
+	// USD value, not aggregate. Verify the value passed each call.
+	prov := &mockProvider{
+		responses: []*provider.Response{
+			{
+				Message:    provider.Message{Role: provider.RoleAssistant, Content: "Done."},
+				StopReason: "end",
+				Usage: provider.Usage{
+					// 100k input * $3/M + 50k output * $15/M = $0.30 + $0.75 = $1.05.
+					InputTokens:  100_000,
+					OutputTokens: 50_000,
+					ModelID:      "claude:sonnet-4-5",
+				},
+			},
+		},
+	}
+
+	var seen []float64
+	cfg := DefaultConfig()
+	cfg.Cost = cost.LoadDefaults()
+	cfg.OnUsage = func(turnUSD float64) bool {
+		seen = append(seen, turnUSD)
+		return false
+	}
+
+	a := New(testPersona(), prov, newMockDriver(), cfg, nil)
+	if _, err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(seen) != 1 {
+		t.Fatalf("expected 1 OnUsage call, got %d", len(seen))
+	}
+	if seen[0] < 1.04 || seen[0] > 1.06 {
+		t.Errorf("OnUsage got %v, want ~1.05", seen[0])
+	}
+}
+
 func TestAgent_NilCostTableLeavesEstimateZero(t *testing.T) {
 	prov := &mockProvider{
 		responses: []*provider.Response{

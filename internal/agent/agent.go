@@ -54,6 +54,17 @@ type Config struct {
 	// enforcement; nil Cost also disables enforcement regardless of
 	// budget value, since we can't estimate cost without a price table.
 	BudgetPerAgentUSD float64
+
+	// OnUsage, if non-nil, is called after every Chat() with the USD
+	// cost of that turn. Returning true triggers the same wrap-up path
+	// as per-agent budget exhaustion: one more turn (built-ins only,
+	// no driver tools), then exit with StopReason="budget_exhausted".
+	//
+	// The orchestrator typically implements this as a closure over a
+	// shared aggregate-cost counter so multiple agents in a run can
+	// enforce a single run-level ceiling. Requires Cost to be non-nil
+	// (we can't report a turn cost without a price table).
+	OnUsage func(turnUSD float64) bool
 }
 
 // budgetExhaustedNudge is the wrap-up message appended when an agent's
@@ -257,6 +268,17 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		}
 		session.Steps = step
 
+		// Notify the orchestrator of this turn's cost. runLevelStop ==
+		// true means a run-level aggregate ceiling has been crossed
+		// — the orchestrator wants this agent to wrap up, even though
+		// its own per-agent budget may still be intact. We fire OnUsage
+		// every turn (including wrap-up) so the orchestrator's
+		// accumulator stays accurate.
+		runLevelStop := false
+		if a.config.OnUsage != nil && a.config.Cost != nil {
+			runLevelStop = a.config.OnUsage(a.config.Cost.Estimate(resp.Usage))
+		}
+
 		messages = append(messages, resp.Message)
 
 		// No tool calls — the model is done talking. If we'd already
@@ -267,7 +289,7 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 		// expensive single-shot completion read as "goals_complete."
 		if len(resp.Message.ToolCalls) == 0 {
 			a.logger.Info("agent finished (no more tool calls)", "step", step)
-			if budgetExhausted || a.budgetCrossed(session) {
+			if budgetExhausted || runLevelStop || a.budgetCrossed(session) {
 				session.StopReason = StopReasonBudgetExhausted
 			} else {
 				session.StopReason = StopReasonGoalsComplete
@@ -333,14 +355,15 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 			break
 		}
 
-		// If the running cost just crossed the budget, queue the
-		// wrap-up nudge for the next iteration. Skipped when Cost is
-		// nil (no estimate possible) or BudgetPerAgentUSD is zero
-		// (no-limit default).
-		if a.budgetCrossed(session) {
+		// Either the per-agent budget or a run-level ceiling crossed —
+		// queue the wrap-up nudge for the next iteration. The two
+		// signals share a single nudge + flag so the wrap-up turn
+		// behaves identically regardless of which one fired.
+		if runLevelStop || a.budgetCrossed(session) {
 			a.logger.Info("budget crossed, requesting wrap-up",
 				"step", step,
-				"budget_usd", a.config.BudgetPerAgentUSD,
+				"trigger", budgetTrigger(runLevelStop),
+				"per_agent_budget_usd", a.config.BudgetPerAgentUSD,
 				"tokens_in", session.TokensIn,
 				"tokens_out", session.TokensOut,
 			)
@@ -377,6 +400,17 @@ func (a *Agent) Run(ctx context.Context) (*Session, error) {
 	a.emit(EventSessionEnd, session.Steps, session)
 
 	return session, nil
+}
+
+// budgetTrigger labels which side of the budget machinery fired the
+// wrap-up so log readers can tell "this run hit the run-level cap"
+// from "this individual agent hit its per-agent cap." Pure cosmetic
+// helper for the slog field.
+func budgetTrigger(runLevel bool) string {
+	if runLevel {
+		return "run_level"
+	}
+	return "per_agent"
 }
 
 // budgetCrossed reports whether the running cost has exceeded the
