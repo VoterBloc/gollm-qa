@@ -92,9 +92,13 @@ func RegisteredPrefixes() []string {
 // guaranteed-valid inputs) so an unknown prefix surfaces before any
 // downstream work starts.
 //
-// The "first non-empty wins" rule encodes the cascade documented on
-// #38: CLI flag > request body > app-config default > built-in default.
-// Each entry point passes the sources it has, in priority order.
+// Each entry point passes the sources it has, in priority order:
+//   - CLI: ResolveSpec(--model, appCfg.DefaultModel)
+//   - HTTP /v1/runs: ResolveSpec(req.Model, appCfg.DefaultModel)
+//
+// No single caller threads all four conceptual sources of the cascade
+// (CLI flag, request body, app-config default, built-in default); the
+// helper just enforces "first non-empty wins, fall back to default."
 func ResolveSpec(candidates ...string) string {
 	for _, c := range candidates {
 		if c != "" {

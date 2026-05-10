@@ -338,8 +338,8 @@ behavior: lurker
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body) // drain SSE
 
-	if *seen != "openai:gpt-4o" {
-		t.Errorf("factory got spec %q, want %q (request body should win over app-config default)", *seen, "openai:gpt-4o")
+	if seen() != "openai:gpt-4o" {
+		t.Errorf("factory got spec %q, want %q (request body should win over app-config default)", seen(), "openai:gpt-4o")
 	}
 }
 
@@ -382,8 +382,8 @@ behavior: lurker
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	if *seen != "openai:gpt-4o-mini" {
-		t.Errorf("factory got spec %q, want %q (app-config default_model should apply when request omits model)", *seen, "openai:gpt-4o-mini")
+	if seen() != "openai:gpt-4o-mini" {
+		t.Errorf("factory got spec %q, want %q (app-config default_model should apply when request omits model)", seen(), "openai:gpt-4o-mini")
 	}
 }
 
@@ -425,8 +425,8 @@ behavior: lurker
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	if *seen != provider.DefaultModelSpec {
-		t.Errorf("factory got spec %q, want %q (built-in default should apply when no other source is set)", *seen, provider.DefaultModelSpec)
+	if seen() != provider.DefaultModelSpec {
+		t.Errorf("factory got spec %q, want %q (built-in default should apply when no other source is set)", seen(), provider.DefaultModelSpec)
 	}
 }
 
@@ -536,12 +536,28 @@ behavior: lurker
 // recordingFactory wraps a stubProvider and remembers the spec it was
 // built for. Lets tests assert which spec the resolution code passed
 // through without coupling to the provider package's wire shape.
-func recordingFactory(prov provider.Provider) (func(spec string) (provider.Provider, error), *string) {
-	var seen string
-	return func(spec string) (provider.Provider, error) {
+//
+// The factory closure is invoked from the HTTP handler goroutine; the
+// returned reader is called from the test goroutine after the response
+// closes. The mutex makes that handoff explicit so a future refactor
+// that splits the read/write boundary doesn't introduce a silent race.
+func recordingFactory(prov provider.Provider) (func(spec string) (provider.Provider, error), func() string) {
+	var (
+		mu   sync.Mutex
+		seen string
+	)
+	factory := func(spec string) (provider.Provider, error) {
+		mu.Lock()
 		seen = spec
+		mu.Unlock()
 		return prov, nil
-	}, &seen
+	}
+	read := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen
+	}
+	return factory, read
 }
 
 // stubProvider returns canned responses in sequence; mirrors the pattern
