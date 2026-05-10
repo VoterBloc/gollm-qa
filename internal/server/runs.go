@@ -69,6 +69,14 @@ type RunRequest struct {
 	// the agent gets one wrap-up turn before exiting with
 	// stop_reason="budget_exhausted". Zero (default) = no limit.
 	BudgetPerAgentUSD float64 `json:"budget_per_agent_usd,omitempty"`
+
+	// MaxRunCostUSD caps the aggregate spend across all agents in
+	// this run. When the total crosses the ceiling, in-flight agents
+	// receive the wrap-up nudge and no new agents start. Zero
+	// (default) = no limit; the server has no opinion about the right
+	// ceiling for arbitrary requests, so the CLI's $5 default doesn't
+	// carry over here.
+	MaxRunCostUSD float64 `json:"max_run_cost_usd,omitempty"`
 }
 
 const (
@@ -186,8 +194,12 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), req.BudgetPerAgentUSD, llm, sse)
-	sse.write(RunEvent{Event: agent.Event{Kind: runEventEnd, At: time.Now()}})
+	sessions := s.runAgents(r.Context(), appCfg, personas, req.maxSteps(), req.BudgetPerAgentUSD, req.MaxRunCostUSD, llm, sse)
+	sse.write(RunEvent{Event: agent.Event{
+		Kind:    runEventEnd,
+		At:      time.Now(),
+		Payload: agent.SummarizeRun(sessions),
+	}})
 }
 
 // introspectIntoConfig populates appCfg.Tools from the live GraphQL
@@ -213,12 +225,18 @@ func (s *Server) introspectIntoConfig(ctx context.Context, appCfg *config.AppCon
 
 // runAgents fans out personas across goroutines (bounded concurrency),
 // each writing events to the shared SSE stream via the persona-tagged
-// callback. Returns when every agent has finished.
+// callback. Returns the completed sessions so the caller can roll a
+// run summary into run_end.
 //
 // llm is shared across every agent in the run — Anthropic / OpenAI SDK
 // clients are concurrency-safe, and the stubProvider used in tests
 // serializes Chat calls under a mutex.
-func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, budgetPerAgent float64, llm provider.Provider, sse *sseWriter) {
+//
+// maxRunCostUSD is the aggregate ceiling. Non-zero enables it: in-flight
+// agents get the wrap-up nudge via OnUsage's stop-return, and the
+// fan-out loop stops queuing new agents once the aggregate is crossed.
+// Zero leaves enforcement off — same shape as BudgetPerAgentUSD.
+func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, personas []*agent.Persona, maxSteps int, budgetPerAgent, maxRunCostUSD float64, llm provider.Provider, sse *sseWriter) []*agent.Session {
 	drvFn := s.cfg.DriverFactory
 	if drvFn == nil {
 		drvFn = func(appCfg *config.AppConfig, logger *slog.Logger) driver.Driver {
@@ -226,13 +244,49 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 		}
 	}
 
+	// Aggregate-cost tracking shared across all agents in this run.
+	// onUsage signals stop=true once the running total crosses the cap,
+	// triggering the wrap-up path inside Agent.Run (same machinery
+	// per-agent budget uses, just a different trigger).
+	var (
+		runMu        sync.Mutex
+		aggregateUSD float64
+	)
+	overBudget := func() bool {
+		runMu.Lock()
+		defer runMu.Unlock()
+		return maxRunCostUSD > 0 && aggregateUSD > maxRunCostUSD
+	}
+	onUsage := func(turnUSD float64) bool {
+		runMu.Lock()
+		defer runMu.Unlock()
+		aggregateUSD += turnUSD
+		return maxRunCostUSD > 0 && aggregateUSD > maxRunCostUSD
+	}
+
+	// Sessions collected for the run_end summary. Append guarded by mu.
+	var (
+		sessionMu sync.Mutex
+		sessions  []*agent.Session
+	)
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runConcurrency)
 
 	for _, p := range personas {
+		// Pre-launch budget check — skip remaining personas once the
+		// aggregate ceiling has been crossed by already-running agents.
+		// Active goroutines see the same ceiling via their next OnUsage
+		// and enter wrap-up.
+		if overBudget() {
+			s.logger.Info("run budget ceiling reached, skipping remaining agents",
+				"max_run_cost_usd", maxRunCostUSD)
+			break
+		}
 		select {
 		case <-ctx.Done():
-			return
+			wg.Wait()
+			return sessions
 		case sem <- struct{}{}:
 		}
 
@@ -246,23 +300,30 @@ func (s *Server) runAgents(ctx context.Context, appCfg *config.AppConfig, person
 				MaxSteps:          maxSteps,
 				Cost:              s.cfg.Cost,
 				BudgetPerAgentUSD: budgetPerAgent,
+				OnUsage:           onUsage,
 				OnEvent: func(ev agent.Event) {
 					sse.write(RunEvent{Persona: p.Name, Event: ev})
 				},
 			}
 			a := agent.New(p, llm, drv, cfg, s.logger)
-			if _, err := a.Run(ctx); err != nil {
+			session, err := a.Run(ctx)
+			if err != nil {
 				s.logger.Error("agent failed", "persona", p.Name, "error", err)
 				sse.write(RunEvent{Persona: p.Name, Event: agent.Event{
 					Kind:    runEventError,
 					At:      time.Now(),
 					Payload: map[string]string{"error": err.Error()},
 				}})
+				return
 			}
+			sessionMu.Lock()
+			sessions = append(sessions, session)
+			sessionMu.Unlock()
 		}(p)
 	}
 
 	wg.Wait()
+	return sessions
 }
 
 // sseWriter serializes writes to the response — multiple agents may
