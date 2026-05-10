@@ -54,6 +54,23 @@ const (
 	BehaviorLurker   Behavior = "lurker"
 )
 
+// Validate checks the persona has the minimum fields a run needs.
+// Name is required because agent log lines, session reports, and
+// per-event SSE payloads all key off it — an empty name produces
+// unattributed output that's hard to read in dashboards. Other
+// fields (description, goals, behavior) are loose enough that
+// callers may legitimately leave them empty (e.g. a lurker with
+// no explicit goals).
+func (p *Persona) Validate() error {
+	if p == nil {
+		return fmt.Errorf("persona is nil")
+	}
+	if p.Name == "" {
+		return fmt.Errorf("persona name is required")
+	}
+	return nil
+}
+
 // SystemPrompt builds the LLM system prompt for this persona.
 func (p *Persona) SystemPrompt() string {
 	var b strings.Builder

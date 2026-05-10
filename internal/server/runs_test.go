@@ -246,6 +246,105 @@ behavior: lurker
 	}
 }
 
+func TestCreateRun_RejectsMalformedSingletonPersona(t *testing.T) {
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	// Genuinely unparseable YAML — `name:` value is an unclosed flow
+	// sequence. yaml.Unmarshal returns an error, which surfaces as
+	// the resolver's "parsing persona" wrap.
+	mustWrite(t, filepath.Join(personasDir, "broken.yaml"), "name: [unclosed\n")
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","persona_set":"broken"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "parsing persona") {
+		t.Errorf("body should mention parsing failure, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsSingletonPersonaWithoutName(t *testing.T) {
+	// A persona file that parses cleanly but has no Name should be
+	// rejected at the boundary — empty Name produces unattributed
+	// log lines and report rows downstream. Pre-existing semantic
+	// gap on the collection side (also fixed via Validate) but the
+	// singleton case is the more likely trigger.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	mustWrite(t, filepath.Join(personasDir, "nameless.yaml"), `# comments only — no name field
+description: A nameless wraith with no goals.
+`)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","persona_set":"nameless"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "name is required") {
+		t.Errorf("body should mention missing name, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsPathTraversalInPersonaSet(t *testing.T) {
+	// A persona_set with `..` segments shouldn't be able to read files
+	// outside the personas directory — reject at the boundary with
+	// the same wire-shape as a genuine typo.
+	configsDir := t.TempDir()
+	mustWrite(t, filepath.Join(configsDir, "lochness.yaml"), validAppConfigYAML())
+	personasDir := t.TempDir()
+	// Write a real file outside the personas dir; the resolver
+	// should refuse to reach it.
+	parentDir := filepath.Dir(personasDir)
+	mustWrite(t, filepath.Join(parentDir, "leaked.yaml"), `name: Should Not Be Reachable
+goals: [look around]
+behavior: lurker
+`)
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"lochness","persona_set":"../leaked"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not found") {
+		t.Errorf("body should match the standard not-found shape, got %s", w.Body.String())
+	}
+}
+
+func TestCreateRun_RejectsPathTraversalInConfigName(t *testing.T) {
+	configsDir := t.TempDir()
+	personasDir := makePersonaCollection(t, "okay", []string{"x.yaml"})
+	parentDir := filepath.Dir(configsDir)
+	mustWrite(t, filepath.Join(parentDir, "leaked.yaml"), validAppConfigYAML())
+	srv := mustNewServer(t, Config{ConfigsDir: configsDir, PersonasDir: personasDir})
+
+	body := `{"config_name":"../leaked","persona_set":"okay"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not found") {
+		t.Errorf("body should match the standard not-found shape, got %s", w.Body.String())
+	}
+}
+
 func TestCreateRun_RejectsEmptyPersonaCollection(t *testing.T) {
 	configsDir := t.TempDir()
 	mustWrite(t, filepath.Join(configsDir, "ghost-watch.yaml"), validAppConfigYAML())

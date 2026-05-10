@@ -508,6 +508,9 @@ func (s *Server) resolvePersonas(req RunRequest) ([]*agent.Persona, error) {
 			if err != nil {
 				return nil, fmt.Errorf("personas[%d]: %w", i, err)
 			}
+			if err := p.Validate(); err != nil {
+				return nil, fmt.Errorf("personas[%d]: %w", i, err)
+			}
 			out = append(out, p)
 		}
 		return out, nil
@@ -539,9 +542,19 @@ func runSources(req RunRequest) map[string]string {
 // resolveYAMLByName checks that <dir>/<name>.yaml or .yml exists. Used
 // at submit time so we 4xx fast on typos instead of failing later in
 // the run.
+//
+// Names that contain `..` segments or absolute paths are rejected with
+// the standard "not found" error — defense-in-depth so a panel sending
+// `config_name: "../personas/leaked"` can't enumerate files outside
+// the configs directory. The wire-shape stays the same as the
+// genuine-typo case so existing 400 string-matchers don't have to grow
+// a second branch.
 func resolveYAMLByName(dir, name string) (string, error) {
 	if dir == "" {
 		return "", errors.New("server has no configs directory configured")
+	}
+	if !filepath.IsLocal(name) {
+		return "", fmt.Errorf("config %q not found", name)
 	}
 	for _, ext := range []string{".yaml", ".yml"} {
 		p := filepath.Join(dir, name+ext)
@@ -570,6 +583,13 @@ func resolveYAMLByName(dir, name string) (string, error) {
 func (s *Server) resolveNamedPersonaSet(name string) ([]*agent.Persona, error) {
 	if s.cfg.PersonasDir == "" {
 		return nil, errors.New("server has no personas directory configured")
+	}
+	// Reject path-traversal attempts up front — wire-shape matches the
+	// genuine-typo "not found" case so existing 400 string-matchers
+	// don't have to grow a second branch. Same defense as
+	// resolveYAMLByName.
+	if !filepath.IsLocal(name) {
+		return nil, fmt.Errorf("persona collection %q not found", name)
 	}
 
 	// Collection wins on ambiguity: if `<dir>/<name>/` is a directory,
@@ -600,6 +620,9 @@ func (s *Server) resolveNamedPersonaSet(name string) ([]*agent.Persona, error) {
 		p, err := config.ParsePersona(data)
 		if err != nil {
 			return nil, fmt.Errorf("parsing persona %s: %w", name+ext, err)
+		}
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("persona %s: %w", name+ext, err)
 		}
 		return []*agent.Persona{p}, nil
 	}
