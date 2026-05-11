@@ -251,6 +251,132 @@ func TestBackfillTags_DryRunMakesNoChanges(t *testing.T) {
 	}
 }
 
+func TestBackfillTags_PreservesUnknownFieldsOnWrite(t *testing.T) {
+	// Hand-written personas can carry fields the agent.Persona struct
+	// doesn't declare (notes, voting_history, app-specific keys).
+	// The node-based round-trip in stampTagsInNode must preserve them.
+	personasDir := t.TempDir()
+	campaignsDir := t.TempDir()
+	writeCampaign(t, campaignsDir, "leaders.yaml", `cohorts:
+  - name: "Bigfoot Believers"
+    count: 1
+    brief: PNW cryptid hunters
+`)
+	original := `name: Bartholomew Sasquatch
+description: Hobbyist cryptozoologist.
+goals:
+  - find tracks
+behavior: engaged
+tags:
+  state: WA
+# Notes block — agent.Persona doesn't have a "notes" field.
+notes: "Prefers cedar forests; carries a film camera."
+voting_history:
+  - year: 2024
+    party: independent
+`
+	personaPath := filepath.Join(personasDir, "bigfoot-believers-bartholomew-sasquatch.yaml")
+	if err := os.WriteFile(personaPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := BackfillTags(personasDir, campaignsDir, false, silentLogger())
+	if err != nil {
+		t.Fatalf("BackfillTags: %v", err)
+	}
+	if len(report.Tagged) != 1 {
+		t.Fatalf("expected 1 tagged, got %d", len(report.Tagged))
+	}
+
+	after, err := os.ReadFile(personaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStr := string(after)
+
+	// Tags landed.
+	if !strings.Contains(afterStr, "cohort: Bigfoot Believers") {
+		t.Errorf("expected cohort tag in output, got:\n%s", afterStr)
+	}
+	if !strings.Contains(afterStr, "campaign: leaders.yaml") {
+		t.Errorf("expected campaign tag in output, got:\n%s", afterStr)
+	}
+	// Unknown fields preserved.
+	if !strings.Contains(afterStr, "Prefers cedar forests") {
+		t.Errorf("unknown 'notes' field lost on round-trip:\n%s", afterStr)
+	}
+	if !strings.Contains(afterStr, "voting_history") {
+		t.Errorf("unknown 'voting_history' field lost on round-trip:\n%s", afterStr)
+	}
+}
+
+func TestBackfillTags_MalformedFileGoesToBucketAndWalkContinues(t *testing.T) {
+	// One broken file mid-walk shouldn't abort the run; other
+	// personas should still get tagged. The malformed file lands
+	// in MalformedYAML for the operator to fix and retry.
+	personasDir := t.TempDir()
+	campaignsDir := t.TempDir()
+	writeCampaign(t, campaignsDir, "leaders.yaml", `cohorts:
+  - name: "Bigfoot Believers"
+    count: 1
+    brief: PNW
+`)
+
+	// Malformed file with a cohort-shaped name (so it could in
+	// principle have been a candidate).
+	brokenPath := filepath.Join(personasDir, "bigfoot-believers-broken.yaml")
+	if err := os.WriteFile(brokenPath, []byte("name: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// And a valid candidate that should still get tagged despite
+	// the broken sibling.
+	writePersonaYAML(t, personasDir, "bigfoot-believers-bartholomew-sasquatch.yaml", agent.Persona{
+		Name:     "Bartholomew Sasquatch",
+		Behavior: agent.BehaviorEngaged,
+	})
+
+	report, err := BackfillTags(personasDir, campaignsDir, false, silentLogger())
+	if err != nil {
+		t.Fatalf("BackfillTags should not abort on malformed sibling: %v", err)
+	}
+	if len(report.MalformedYAML) != 1 {
+		t.Errorf("expected 1 MalformedYAML, got %d", len(report.MalformedYAML))
+	}
+	if len(report.Tagged) != 1 {
+		t.Errorf("expected 1 Tagged (walk should have continued past the broken file), got %d", len(report.Tagged))
+	}
+}
+
+func TestBackfillTags_AtomicWriteLeavesNoTempArtifact(t *testing.T) {
+	// Sanity: after a successful run, no .bk-new temp files linger
+	// in the personas directory.
+	personasDir := t.TempDir()
+	campaignsDir := t.TempDir()
+	writeCampaign(t, campaignsDir, "leaders.yaml", `cohorts:
+  - name: "Bigfoot Believers"
+    count: 1
+    brief: PNW
+`)
+	writePersonaYAML(t, personasDir, "bigfoot-believers-bartholomew-sasquatch.yaml", agent.Persona{
+		Name:     "Bartholomew Sasquatch",
+		Behavior: agent.BehaviorEngaged,
+	})
+
+	if _, err := BackfillTags(personasDir, campaignsDir, false, silentLogger()); err != nil {
+		t.Fatalf("BackfillTags: %v", err)
+	}
+
+	entries, err := os.ReadDir(personasDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".bk-new") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestBackfillTags_RecursesIntoCohortSubdirs(t *testing.T) {
 	// Layout: personas/sasquatch/sasquatch-bartholomew-sasquatch.yaml
 	// covers the case where seed wrote into a per-cohort subdirectory.

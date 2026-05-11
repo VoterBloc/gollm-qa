@@ -52,4 +52,5 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  No cohort prefix (skipped): %d\n", len(report.NoCohortPrefix))
 	fmt.Fprintf(os.Stderr, "  Unmatched cohort (skipped): %d\n", len(report.UnmatchedCohort))
 	fmt.Fprintf(os.Stderr, "  Ambiguous cohort (skipped): %d\n", len(report.AmbiguousCohort))
+	fmt.Fprintf(os.Stderr, "  Malformed YAML (skipped): %d\n", len(report.MalformedYAML))
 }
