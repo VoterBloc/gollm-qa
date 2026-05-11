@@ -9,6 +9,7 @@ import (
 	"github.com/VoterBloc/gollm-qa/internal/provider"
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/claude" // exercise the real registration
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/gemini" // exercise the real registration
+	_ "github.com/VoterBloc/gollm-qa/internal/provider/local"  // exercise the real registration
 	_ "github.com/VoterBloc/gollm-qa/internal/provider/openai" // exercise the real registration
 )
 
@@ -137,6 +138,18 @@ func TestNew_GeminiSpecResolves(t *testing.T) {
 	p, err := provider.New("gemini:2.5-pro")
 	if err != nil {
 		t.Fatalf("New(\"gemini:2.5-pro\"): %v", err)
+	}
+	if p == nil {
+		t.Fatal("New returned nil provider")
+	}
+}
+
+func TestNew_LocalSpecResolves(t *testing.T) {
+	// Local provider uses a placeholder API key and the default
+	// Ollama base URL; no env vars required to construct.
+	p, err := provider.New("local:llama3.1")
+	if err != nil {
+		t.Fatalf("New(\"local:llama3.1\"): %v", err)
 	}
 	if p == nil {
 		t.Fatal("New returned nil provider")

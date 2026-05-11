@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -129,11 +130,24 @@ func (t *Table) WithLogger(lg *slog.Logger) *Table {
 // Estimate returns the USD cost of a request given its token counts and
 // model id. Returns 0 (and logs once) for unknown ids — cost accounting
 // degrades gracefully rather than failing the run.
+//
+// Lookup falls back to a provider-wildcard entry (`<prefix>:*`) when no
+// exact match is found. Lets `local:*` cover every Ollama / vLLM /
+// llama.cpp model without listing each one explicitly, and gives any
+// future provider the same escape hatch for "this whole prefix is the
+// same rate." Exact entries win over the wildcard.
 func (t *Table) Estimate(u provider.Usage) float64 {
 	if u.ModelID == "" {
 		return 0
 	}
 	p, ok := t.prices[u.ModelID]
+	if !ok {
+		if i := strings.Index(u.ModelID, ":"); i >= 0 {
+			if pw, okw := t.prices[u.ModelID[:i+1]+"*"]; okw {
+				p, ok = pw, true
+			}
+		}
+	}
 	if !ok {
 		if t.warnedUnknown != nil {
 			if _, loaded := t.warnedUnknown.LoadOrStore(u.ModelID, struct{}{}); !loaded {
@@ -147,10 +161,20 @@ func (t *Table) Estimate(u provider.Usage) float64 {
 		float64(u.OutputTokens)*p.OutputPerMillionUSD/perMillion
 }
 
-// Has reports whether t has a price for the given spec id. Useful for
-// callers that want to validate a model selection at startup rather
-// than discovering missing pricing on the first response.
+// Has reports whether t has a price for the given spec id. Wildcard
+// entries (`<prefix>:*`) count as coverage so a startup check like
+// `tbl.Has("local:llama3.1")` succeeds even when only `local:*` is
+// listed. Useful for callers that want to validate a model selection
+// at startup rather than discovering missing pricing on the first
+// response.
 func (t *Table) Has(modelID string) bool {
-	_, ok := t.prices[modelID]
-	return ok
+	if _, ok := t.prices[modelID]; ok {
+		return ok
+	}
+	if i := strings.Index(modelID, ":"); i >= 0 {
+		if _, ok := t.prices[modelID[:i+1]+"*"]; ok {
+			return true
+		}
+	}
+	return false
 }
