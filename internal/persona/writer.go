@@ -15,8 +15,15 @@ import (
 type WriteOptions struct {
 	// OutputDir is the directory to write persona YAMLs into. Created if missing.
 	OutputDir string
-	// CohortName prefixes the generated filename for traceability.
+	// CohortName prefixes the generated filename for traceability and is
+	// stamped on the persona's tags.cohort so cohort lineage survives the
+	// generate → persist → run lifecycle (#56).
 	CohortName string
+	// CampaignName is the basename of the campaign YAML that produced this
+	// persona (e.g. "staging-leaders-2026-05.yaml"). Stamped on tags.campaign
+	// for the same lineage reason. Empty when the caller doesn't have a
+	// campaign context.
+	CampaignName string
 	// RegisterTemplate maps register_input keys to templates referencing
 	// {{firstName}}, {{lastName}}, {{email}}, {{username}}, {{password}}.
 	// If empty, the persona's register_input is omitted.
@@ -35,6 +42,7 @@ func Write(id GeneratedIdentity, opts WriteOptions) (string, error) {
 	}
 
 	persona := buildPersona(id, opts.RegisterTemplate)
+	stampCohortTags(persona, opts.CohortName, opts.CampaignName)
 
 	data, err := yaml.Marshal(persona)
 	if err != nil {
@@ -94,6 +102,26 @@ func renderTemplate(tpl map[string]string, id GeneratedIdentity) map[string]any 
 		out[k] = rendered
 	}
 	return out
+}
+
+// stampCohortTags writes cohort + campaign attribution onto the
+// persona's tags map so cohort identity survives past filename-only
+// prefix conventions. Empty values are skipped — a CLI user running
+// `gollm run --personas <dir>` without a generation context doesn't
+// have cohort lineage to claim, and tagging "" would just be noise.
+//
+// Free-form tags map matches the existing convention (see
+// internal/persona/writer.go's buildPersona) — no schema enforced.
+func stampCohortTags(p *agent.Persona, cohortName, campaignName string) {
+	if p.Tags == nil {
+		p.Tags = map[string]string{}
+	}
+	if cohortName != "" {
+		p.Tags["cohort"] = cohortName
+	}
+	if campaignName != "" {
+		p.Tags["campaign"] = campaignName
+	}
 }
 
 // filename returns a slug-ified filename like "bigfoot-believers-bart-sasquatch.yaml".
