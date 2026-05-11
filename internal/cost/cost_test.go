@@ -154,6 +154,74 @@ providers:
 	}
 }
 
+func TestEstimate_WildcardCoversUnlistedModel(t *testing.T) {
+	// local:* in the shipped defaults should cover any model name
+	// without firing the unknown-model warning.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	tbl := cost.LoadDefaults().WithLogger(logger)
+
+	for _, id := range []string{"local:qwen2.5", "local:phi3", "local:mistral", "local:deepseek-r1"} {
+		got := tbl.Estimate(provider.Usage{
+			InputTokens:  1_000_000,
+			OutputTokens: 1_000_000,
+			ModelID:      id,
+		})
+		if got != 0 {
+			t.Errorf("Estimate(%s) = %v, want 0 (wildcard zero-cost)", id, got)
+		}
+		if !tbl.Has(id) {
+			t.Errorf("Has(%s) = false, want true via wildcard coverage", id)
+		}
+	}
+
+	if strings.Contains(buf.String(), "unknown model id") {
+		t.Errorf("wildcard should suppress the unknown-model warning, got:\n%s", buf.String())
+	}
+}
+
+func TestEstimate_ExactEntryWinsOverWildcard(t *testing.T) {
+	// Override file pins local:qwen2.5 at non-zero while local:* is
+	// still zero in defaults. Exact match must win — otherwise users
+	// can't pin individual models in a wildcard'd provider.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "override.yaml")
+	body := []byte(`
+providers:
+  local:
+    qwen2.5:
+      input_per_million_usd: 5.00
+      output_per_million_usd: 10.00
+`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := cost.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Exact entry wins.
+	got := tbl.Estimate(provider.Usage{
+		InputTokens:  1_000_000,
+		OutputTokens: 0,
+		ModelID:      "local:qwen2.5",
+	})
+	if got != 5.00 {
+		t.Errorf("Estimate(local:qwen2.5) = %v, want 5.00 (exact entry wins)", got)
+	}
+
+	// Other local:* still hits the wildcard at zero.
+	got = tbl.Estimate(provider.Usage{
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+		ModelID:      "local:phi3",
+	})
+	if got != 0 {
+		t.Errorf("Estimate(local:phi3) = %v, want 0 (wildcard fallback)", got)
+	}
+}
+
 func TestLoad_EmptyPathReturnsDefaults(t *testing.T) {
 	tbl, err := cost.Load("")
 	if err != nil {
@@ -219,6 +287,10 @@ func TestDefaults_HasExpectedModels(t *testing.T) {
 		"openai:gpt-4o-mini",
 		"gemini:2.5-pro",
 		"gemini:2.5-flash",
+		// Any local:* should hit the wildcard entry — no explicit
+		// listing per model required. Picking llama3.1 here as the
+		// common-case proof; the wildcard mechanic is exercised
+		// separately by TestEstimate_WildcardCoversUnlistedModel.
 		"local:llama3.1",
 	}
 	for _, id := range mustBePriced {

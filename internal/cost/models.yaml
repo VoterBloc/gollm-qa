@@ -38,12 +38,11 @@ providers:
       output_per_million_usd: 2.50
   local:
     # Local models (Ollama / vLLM / llama.cpp / LM Studio) are free
-    # in the API-cost sense — you're paying for the hardware, not
-    # per token. Listing `local:llama3.1` explicitly keeps the
-    # unknown-model warning from firing on the common-case run.
-    # Other local model names (qwen2.5, phi3, mistral, ...) fall
-    # through to zero with a one-time warning — still effectively
-    # free in cost accounting.
-    llama3.1:
+    # in the API-cost sense — you're paying for hardware, not per
+    # token. The `*` wildcard covers every model under the `local:`
+    # prefix so operators don't have to list each one explicitly,
+    # and the cost engine skips the unknown-model warning for any
+    # `local:<name>` regardless of what's pulled.
+    "*":
       input_per_million_usd: 0
       output_per_million_usd: 0

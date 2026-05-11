@@ -24,6 +24,8 @@ func TestResolveBaseURL(t *testing.T) {
 		{"trailing slash stripped before /v1", "http://host:11434/", "", "http://host:11434/v1"},
 		{"already has /v1 — idempotent", "http://host:11434/v1", "", "http://host:11434/v1"},
 		{"already has /v1 with trailing slash", "http://host:11434/v1/", "", "http://host:11434/v1"},
+		{"non-v1 versioned path left alone", "http://host:11434/v1beta", "", "http://host:11434/v1beta"},
+		{"versioned path with digit suffix", "http://host:11434/v2alpha", "", "http://host:11434/v2alpha"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,6 +45,28 @@ func TestResolveBaseURL(t *testing.T) {
 func TestNewFromSpec_RejectsEmpty(t *testing.T) {
 	if _, err := NewFromSpec(""); err == nil {
 		t.Fatal("expected error for empty model name")
+	}
+}
+
+func TestResolveAPIKey(t *testing.T) {
+	cases := []struct {
+		name     string
+		explicit string
+		envKey   string
+		want     string
+	}{
+		{"defaults to placeholder", "", "", placeholderAPIKey},
+		{"WithAPIKey wins outright", "sk-yowie-key", "sk-env-key", "sk-yowie-key"},
+		{"OLLAMA_API_KEY when no explicit", "", "sk-env-key", "sk-env-key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OLLAMA_API_KEY", tc.envKey)
+			if got := resolveAPIKey(tc.explicit); got != tc.want {
+				t.Errorf("resolveAPIKey(%q) with OLLAMA_API_KEY=%q = %q, want %q",
+					tc.explicit, tc.envKey, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -73,7 +97,7 @@ func TestChat_OverridesModelIDInUsage(t *testing.T) {
 			return
 		}
 		resp := map[string]any{
-			"id":      "chatcmpl-localllama",
+			"id":      "chatcmpl-drop-bear",
 			"object":  "chat.completion",
 			"created": 1234567890,
 			"model":   "llama3.1",

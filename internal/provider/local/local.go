@@ -72,10 +72,16 @@ func WithBaseURL(url string) Option {
 
 // WithAPIKey overrides the placeholder key. Ollama doesn't check
 // authentication, but some compatible servers (vLLM, llama.cpp's
-// OpenAI-compat mode) do.
+// OpenAI-compat mode) do. OLLAMA_API_KEY env var works too.
 func WithAPIKey(key string) Option {
 	return func(c *localConfig) { c.apiKey = key }
 }
+
+// Intentionally no WithModel-style option. The model name only
+// enters via NewFromSpec's argument so it can't drift away from
+// modelSpec (the bug the original Claude package's WithModel had,
+// flagged on PR #39). If you need a different model, build a new
+// provider via NewFromSpec rather than mutating an existing one.
 
 // Local implements provider.Provider via an inner openai.OpenAI
 // configured with a local base URL + placeholder API key. Chat()
@@ -109,10 +115,7 @@ func NewFromSpec(modelName string, opts ...Option) (*Local, error) {
 	}
 
 	baseURL := resolveBaseURL(cfg.baseURL)
-	apiKey := cfg.apiKey
-	if apiKey == "" {
-		apiKey = placeholderAPIKey
-	}
+	apiKey := resolveAPIKey(cfg.apiKey)
 
 	inner, err := openai.NewFromSpec(modelName,
 		oaiopt.WithBaseURL(baseURL),
@@ -128,9 +131,12 @@ func NewFromSpec(modelName string, opts ...Option) (*Local, error) {
 }
 
 // resolveBaseURL applies the WithBaseURL > OLLAMA_HOST > default
-// cascade and ensures the URL ends in /v1 (Ollama's
-// OpenAI-compat endpoint path). Idempotent on the suffix so
-// callers can pass either `http://host:port` or `http://host:port/v1`.
+// cascade and ensures the URL ends with a `/v<N>` versioned path
+// (Ollama's OpenAI-compat endpoint lives at `/v1`). Idempotent —
+// callers can pass `http://host:port`, `http://host:port/v1`, or
+// even `http://host:port/v1beta` for compat servers that publish a
+// non-`v1` path, and the resolver leaves the existing version
+// segment alone instead of double-appending.
 func resolveBaseURL(explicit string) string {
 	base := explicit
 	if base == "" {
@@ -140,10 +146,37 @@ func resolveBaseURL(explicit string) string {
 		base = defaultOllamaHost
 	}
 	base = strings.TrimRight(base, "/")
-	if !strings.HasSuffix(base, "/v1") {
+	if !hasVersionPath(base) {
 		base += "/v1"
 	}
 	return base
+}
+
+// hasVersionPath reports whether base already ends in a versioned
+// path segment like `/v1`, `/v1beta`, `/v2`, `/v3alpha`. Used to
+// keep resolveBaseURL idempotent against non-default compat servers.
+func hasVersionPath(base string) bool {
+	i := strings.LastIndex(base, "/v")
+	if i < 0 {
+		return false
+	}
+	rest := base[i+2:]
+	return len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9'
+}
+
+// resolveAPIKey applies the WithAPIKey > OLLAMA_API_KEY > placeholder
+// cascade. The placeholder ("ollama") matches Ollama's docs; operators
+// running a key-checking compat server (vLLM, llama.cpp) set the env
+// var or pass WithAPIKey.
+func resolveAPIKey(explicit string) string {
+	key := explicit
+	if key == "" {
+		key = os.Getenv("OLLAMA_API_KEY")
+	}
+	if key == "" {
+		key = placeholderAPIKey
+	}
+	return key
 }
 
 // Chat delegates to the OpenAI-compatible inner provider and
