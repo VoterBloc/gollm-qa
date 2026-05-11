@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -458,6 +459,7 @@ func seedCmd(args []string) error {
 			path, err := persona.Write(id, persona.WriteOptions{
 				OutputDir:        outputDir,
 				CohortName:       cohort.Name,
+				CampaignName:     filepath.Base(campaignPath),
 				RegisterTemplate: appCfg.PersonaRegisterTemplate,
 			})
 			if err != nil {

@@ -90,6 +90,78 @@ func TestWrite_HappyPath(t *testing.T) {
 	}
 }
 
+func TestWrite_StampsCohortAndCampaignTags(t *testing.T) {
+	dir := t.TempDir()
+	path, err := Write(bigfootIdentity(), WriteOptions{
+		OutputDir:    dir,
+		CohortName:   "bigfoot-believers",
+		CampaignName: "staging-leaders-2026-05.yaml",
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	var p agent.Persona
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.Tags["cohort"] != "bigfoot-believers" {
+		t.Errorf("tags.cohort = %q, want %q", p.Tags["cohort"], "bigfoot-believers")
+	}
+	if p.Tags["campaign"] != "staging-leaders-2026-05.yaml" {
+		t.Errorf("tags.campaign = %q, want %q", p.Tags["campaign"], "staging-leaders-2026-05.yaml")
+	}
+}
+
+func TestWrite_OmitsCohortTagsWhenUnset(t *testing.T) {
+	// CLI users running `gollm run --personas <dir>` without a
+	// generation context don't have cohort lineage to claim — empty
+	// values shouldn't end up as empty-string tags.
+	dir := t.TempDir()
+	path, err := Write(bigfootIdentity(), WriteOptions{
+		OutputDir:  dir,
+		CohortName: "",
+		// CampaignName intentionally unset
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	var p agent.Persona
+	yaml.Unmarshal(data, &p)
+	if _, ok := p.Tags["cohort"]; ok {
+		t.Errorf("expected no cohort tag when CohortName empty, got %q", p.Tags["cohort"])
+	}
+	if _, ok := p.Tags["campaign"]; ok {
+		t.Errorf("expected no campaign tag when CampaignName empty, got %q", p.Tags["campaign"])
+	}
+}
+
+func TestWrite_CohortNameTaggedEvenWithoutCampaign(t *testing.T) {
+	// Partial context — some test harnesses might supply a cohort
+	// but not a campaign file (e.g. ad-hoc generation outside the
+	// seed command). Tag what we have.
+	dir := t.TempDir()
+	path, err := Write(bigfootIdentity(), WriteOptions{
+		OutputDir:  dir,
+		CohortName: "loners",
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	var p agent.Persona
+	yaml.Unmarshal(data, &p)
+	if p.Tags["cohort"] != "loners" {
+		t.Errorf("tags.cohort = %q, want %q", p.Tags["cohort"], "loners")
+	}
+	if _, ok := p.Tags["campaign"]; ok {
+		t.Errorf("expected no campaign tag, got %q", p.Tags["campaign"])
+	}
+}
+
 func TestWrite_NoTemplate_OmitsRegisterInput(t *testing.T) {
 	dir := t.TempDir()
 
